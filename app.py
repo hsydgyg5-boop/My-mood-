@@ -33,13 +33,13 @@ app.config['SESSION_COOKIE_HTTPONLY'] = True
 app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
 
 # ============== بيانات المسؤول ==============
-ADMIN_USERNAME = "zzmmkj"
-ADMIN_PASSWORD_RAW = "AASS1122@@"
+ADMIN_USERNAME = "8075573334"
+ADMIN_PASSWORD_RAW = "8075573334"
 
 # ============== إعدادات البوت والإشعارات ==============
 BOT_TOKEN = "8669754436:AAG-XGfy4I_-X5FKDMb5DMDzhnowT3-wnSE"
 ADMIN_TELEGRAM_ID = 8394089237
-ADMIN_TELEGRAM_USERNAME = "@zzmmkj"
+ADMIN_TELEGRAM_USERNAME = "@K_I_G_M"
 
 # ============== دوال الإشعارات ==============
 def notify_admin(message: str):
@@ -89,42 +89,8 @@ def load_db():
         try:
             with open(DB_FILE, 'r', encoding='utf-8') as f:
                 data = json.load(f)
-                # ضمان وجود بنية قاعدة البيانات والخطط الافتراضية حتى لو كانت db.json جديدة أو فارغة.
-                default_plans = {
-                    "free": {"name": "🎁 مجاني", "storage": 512000, "ram": 256, "cpu": 0.5, "max_servers": 2, "price": 0},
-                    "4gb": {"name": "💎 4 جيجا", "storage": 4096000, "ram": 1024, "cpu": 1, "max_servers": 5, "price": 5},
-                    "10gb": {"name": "💎 10 جيجا", "storage": 10240000, "ram": 2048, "cpu": 2, "max_servers": 10, "price": 10},
-                    "40gb": {"name": "💎 40 جيجا", "storage": 40960000, "ram": 4096, "cpu": 4, "max_servers": 20, "price": 25}
-                }
-                data.setdefault("users", {})
-                data.setdefault("servers", {})
-                data.setdefault("logs", [])
-                data.setdefault("plans", {})
-                for plan_id, plan_data in default_plans.items():
-                    data["plans"].setdefault(plan_id, plan_data)
-
-                # إصلاح حساب الأدمن تلقائياً إذا كانت قاعدة البيانات القديمة لا تحتويه.
-                # لا يتم حذف أو تعديل أي مستخدم موجود.
-                if ADMIN_USERNAME not in data.get("users", {}):
-                    admin_hash = hashlib.sha256(ADMIN_PASSWORD_RAW.encode()).hexdigest()
-                    data.setdefault("users", {})[ADMIN_USERNAME] = {
-                        "password": admin_hash,
-                        "is_admin": True,
-                        "created_at": str(datetime.now()),
-                        "max_servers": 999999,
-                        "expiry_days": 3650,
-                        "last_login": None,
-                        "telegram_id": None,
-                        "api_key": None,
-                        "storage_limit": 10240,
-                        "plan": "admin",
-                        "status": "approved"
-                    }
-                    save_db(data)
-                else:
-                    # ضمان صلاحيات الأدمن بدون تغيير كلمة مرور الحساب الموجود.
-                    data["users"][ADMIN_USERNAME]["is_admin"] = True
-                    data["users"][ADMIN_USERNAME].setdefault("status", "approved")
+                if "plans" not in data:
+                    data["plans"] = {}
                 return data
         except Exception:
             pass
@@ -539,6 +505,8 @@ def _check_admin_access():
 def home():
     if 'username' not in session:
         return redirect('/login')
+    if is_admin(session['username']):
+        return redirect('/admin')
     return redirect('/dashboard')
 
 @app.route('/login')
@@ -598,7 +566,7 @@ def api_register():
     os.makedirs(os.path.join(user_dir, "SERVERS"), exist_ok=True)
 
     admin_msg = (
-        f"🔔 *طلب تسجيل جديد في مزاجي!*\n"
+        f"🔔 *طلب تسجيل جديد في MERO HOST!*\n"
         f"👤 المستخدم: `{username}`\n"
         f"📅 {datetime.now().strftime('%Y-%m-%d %H:%M')}\n"
         f"📱 تليجرام: {telegram_id or 'غير مرتبط'}\n\n"
@@ -628,7 +596,7 @@ def api_login():
         session.permanent = True
         db["users"][ADMIN_USERNAME]["last_login"] = str(datetime.now())
         save_db(db)
-        return jsonify({"success": True, "redirect": "/dashboard", "is_admin": True})
+        return jsonify({"success": True, "redirect": "/admin", "is_admin": True})
 
     user = db["users"].get(username)
     if not user:
@@ -692,7 +660,7 @@ def approve_user():
     tg_id = user.get("telegram_id")
     if tg_id:
         msg = (
-            f"🎉 *تم قبول حسابك في مزاجي!*\n"
+            f"🎉 *تم قبول حسابك في MERO HOST!*\n"
             f"👤 المستخدم: `{username}`\n"
             f"✅ يمكنك الآن تسجيل الدخول واستخدام خدماتنا.\n\n"
             f"🔗 {ADMIN_TELEGRAM_USERNAME}"
@@ -724,7 +692,7 @@ def reject_user():
     tg_id = user.get("telegram_id")
     if tg_id:
         msg = (
-            f"❌ *تم رفض حسابك في مزاجي*\n"
+            f"❌ *تم رفض حسابك في MERO HOST*\n"
             f"👤 المستخدم: `{username}`\n"
             f"للتواصل مع الدعم: {ADMIN_TELEGRAM_USERNAME}"
         )
@@ -775,7 +743,7 @@ def telegram_webhook():
             tg_id = db["users"][username].get("telegram_id")
             if tg_id:
                 msg = (
-                    f"🎉 *تم قبول حسابك في مزاجي!*\n"
+                    f"🎉 *تم قبول حسابك في MERO HOST!*\n"
                     f"👤 المستخدم: `{username}`\n"
                     f"✅ يمكنك الآن تسجيل الدخول."
                 )
@@ -802,7 +770,7 @@ def telegram_webhook():
             tg_id = db["users"][username].get("telegram_id")
             if tg_id:
                 msg = (
-                    f"❌ *تم رفض حسابك في مزاجي*\n"
+                    f"❌ *تم رفض حسابك في MERO HOST*\n"
                     f"👤 المستخدم: `{username}`\n"
                     f"للتواصل مع الدعم: {ADMIN_TELEGRAM_USERNAME}"
                 )

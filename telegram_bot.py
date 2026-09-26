@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-مزاجي - بوت التحكم الكامل مع دعم PHP و Python و Node.js
-طُوِّر بواسطة: ᗴᒪᗰOᗪᗰᗴᑎ | @zzmmkj
+𝙺𝙸𝙽𝙶 𝙼𝙾𝙳 - بوت التحكم الكامل مع دعم PHP و Python و Node.js
+طُوِّر بواسطة: ᗴᒪᗰOᗪᗰᗴᑎ | @K_I_G_M
 """
 
 import os
@@ -14,13 +14,13 @@ from telegram.ext import (
 
 # ========== إعدادات البوت ==========
 BOT_TOKEN = "8107118673:AAG6xUifqFD5qtCWZMy_D9qEmC8HOCx4DBo"
-API_BASE_URL = os.environ.get("API_BASE_URL", "https://skkbsmdh.up.railway.app")
+API_BASE_URL = os.environ.get("API_BASE_URL", "https://mero-host.onrender.com")
 
 # إيدي الأدمن على تليجرام
 ADMIN_TELEGRAM_IDS = [8394089237]
 
 # معلومات المطور
-DEVELOPER_INFO = "🛠 طُوِّر بواسطة: *مزاجي*\n📬 تواصل: @zzmmkj"
+DEVELOPER_INFO = "🛠 طُوِّر بواسطة: *𝙺𝙸𝙽𝙶 𝙼𝙾𝙳*\n📬 تواصل: @K_I_G_M"
 
 # ========== حالات المحادثة ==========
 (
@@ -96,11 +96,11 @@ async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, edi
             InlineKeyboardButton(bell, callback_data="admin_notifications"),
         ])
 
-    keyboard.append([InlineKeyboardButton("💬 تواصل مع المطور @zzmmkj", url="https://t.me/zzmmkj")])
+    keyboard.append([InlineKeyboardButton("💬 تواصل مع المطور @I_tt_6", url="https://t.me/I_tt_6")])
 
     text = (
         "━━━━━━━━━━━━━━━━━━━━\n"
-        "      مزاجي 🚀\n"
+        "      𝙺𝙸𝙽𝙶 𝙼𝙾𝙳 🚀\n"
         "━━━━━━━━━━━━━━━━━━━━\n"
     )
     if username:
@@ -221,7 +221,7 @@ async def show_admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     text = (
         "━━━━━━━━━━━━━━━━━━━━\n"
-        "  👑 لوحة إدارة مزاجي\n"
+        "  👑 لوحة إدارة 𝙼𝙴𝚁𝙾 𝙷𝙾𝚂𝚃\n"
         "━━━━━━━━━━━━━━━━━━━━\n"
         f"👥 المستخدمين: *{len(users)}*\n"
         f"🔔 طلبات معلقة: *{pending_count}*\n"
@@ -310,14 +310,14 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     keyboard = [
         [InlineKeyboardButton("🔑 إدخال API Key", callback_data="enter_api")],
-        [InlineKeyboardButton("💬 تواصل مع المطور @zzmmkj", url="https://t.me/zzmmkj")],
+        [InlineKeyboardButton("💬 تواصل مع المطور @I_tt_6", url="https://t.me/I_tt_6")],
     ]
     await update.message.reply_text(
         "━━━━━━━━━━━━━━━━━━━━\n"
-        "      مزاجي 🚀\n"
+        "      𝙼𝙴𝚁𝙾 𝙷𝙾𝚂𝚃 🚀\n"
         "━━━━━━━━━━━━━━━━━━━━\n"
         "للاشتراك والحصول على حساب:\n"
-        "📬 تواصل مع المطور: @zzmmkj\n\n"
+        "📬 تواصل مع المطور: @I_tt_6\n\n"
         f"{DEVELOPER_INFO}",
         parse_mode="Markdown",
         reply_markup=InlineKeyboardMarkup(keyboard),
@@ -329,11 +329,11 @@ async def handle_api_key(update: Update, context: ContextTypes.DEFAULT_TYPE):
     api_key = update.message.text.strip()
     result = api_request("/api/bot/verify", method="POST", data={"api_key": api_key})
     if not result or not result.get("success"):
-        keyboard = [[InlineKeyboardButton("💬 تواصل مع المطور", url="https://t.me/zzmmkj")]]
+        keyboard = [[InlineKeyboardButton("💬 تواصل مع المطور", url="https://t.me/I_tt_6")]]
         await update.message.reply_text(
             "❌ *مفتاح API غير صالح!*\n\n"
             "تحقق من الكود وحاول مرة أخرى\n"
-            "أو تواصل مع المطور: @zzmmkj",
+            "أو تواصل مع المطور: @I_tt_6",
             parse_mode="Markdown",
             reply_markup=InlineKeyboardMarkup(keyboard),
         )
@@ -520,7 +520,7 @@ async def run_php_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "مثال:\n"
         "```php\n"
         "echo 'Hello World!';\n"
-        "$name = 'MAZAGI';\n"
+        "$name = 'MERO';\n"
         "echo 'مرحباً ' . $name;\n"
         "```\n\n"
         "🔄 أو استخدم /cancel للإلغاء",
@@ -726,7 +726,7 @@ async def handle_php_filename(update: Update, context: ContextTypes.DEFAULT_TYPE
         "أرسل كود PHP كامل (بدون <?php و ?>):\n\n"
         "مثال:\n"
         "```php\n"
-        "echo 'Hello from MAZAGI!';\n"
+        "echo 'Hello from MERO!';\n"
         "```\n\n"
         "🔄 أو استخدم /cancel للإلغاء",
         parse_mode="Markdown"
@@ -971,7 +971,7 @@ def main():
     # أضف أوامر PHP
     application.add_handler(CommandHandler("php_run", php_run_command))
     
-    print("🚀 مزاجي Bot يعمل مع دعم PHP و Python و Node.js...")
+    print("🚀 𝙺𝙸𝙽𝙶 𝙼𝙾𝙳 Bot يعمل مع دعم PHP و Python و Node.js...")
     application.run_polling(drop_pending_updates=True)
 
 
