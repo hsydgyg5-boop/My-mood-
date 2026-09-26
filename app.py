@@ -33,13 +33,13 @@ app.config['SESSION_COOKIE_HTTPONLY'] = True
 app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
 
 # ============== بيانات المسؤول ==============
-ADMIN_USERNAME = "8075573334"
-ADMIN_PASSWORD_RAW = "8075573334"
+ADMIN_USERNAME = "zzmmkj"
+ADMIN_PASSWORD_RAW = "AASS1122@@"
 
 # ============== إعدادات البوت والإشعارات ==============
 BOT_TOKEN = "8669754436:AAG-XGfy4I_-X5FKDMb5DMDzhnowT3-wnSE"
 ADMIN_TELEGRAM_ID = 8394089237
-ADMIN_TELEGRAM_USERNAME = "@K_I_G_M"
+ADMIN_TELEGRAM_USERNAME = "@zzmmkj"
 
 # ============== دوال الإشعارات ==============
 def notify_admin(message: str):
@@ -91,6 +91,29 @@ def load_db():
                 data = json.load(f)
                 if "plans" not in data:
                     data["plans"] = {}
+
+                # إصلاح حساب الأدمن تلقائياً إذا كانت قاعدة البيانات القديمة لا تحتويه.
+                # لا يتم حذف أو تعديل أي مستخدم موجود.
+                if ADMIN_USERNAME not in data.get("users", {}):
+                    admin_hash = hashlib.sha256(ADMIN_PASSWORD_RAW.encode()).hexdigest()
+                    data.setdefault("users", {})[ADMIN_USERNAME] = {
+                        "password": admin_hash,
+                        "is_admin": True,
+                        "created_at": str(datetime.now()),
+                        "max_servers": 999999,
+                        "expiry_days": 3650,
+                        "last_login": None,
+                        "telegram_id": None,
+                        "api_key": None,
+                        "storage_limit": 10240,
+                        "plan": "admin",
+                        "status": "approved"
+                    }
+                    save_db(data)
+                else:
+                    # ضمان صلاحيات الأدمن بدون تغيير كلمة مرور الحساب الموجود.
+                    data["users"][ADMIN_USERNAME]["is_admin"] = True
+                    data["users"][ADMIN_USERNAME].setdefault("status", "approved")
                 return data
         except Exception:
             pass
@@ -566,7 +589,7 @@ def api_register():
     os.makedirs(os.path.join(user_dir, "SERVERS"), exist_ok=True)
 
     admin_msg = (
-        f"🔔 *طلب تسجيل جديد في MERO HOST!*\n"
+        f"🔔 *طلب تسجيل جديد في مزاجي!*\n"
         f"👤 المستخدم: `{username}`\n"
         f"📅 {datetime.now().strftime('%Y-%m-%d %H:%M')}\n"
         f"📱 تليجرام: {telegram_id or 'غير مرتبط'}\n\n"
@@ -660,7 +683,7 @@ def approve_user():
     tg_id = user.get("telegram_id")
     if tg_id:
         msg = (
-            f"🎉 *تم قبول حسابك في MERO HOST!*\n"
+            f"🎉 *تم قبول حسابك في مزاجي!*\n"
             f"👤 المستخدم: `{username}`\n"
             f"✅ يمكنك الآن تسجيل الدخول واستخدام خدماتنا.\n\n"
             f"🔗 {ADMIN_TELEGRAM_USERNAME}"
@@ -692,7 +715,7 @@ def reject_user():
     tg_id = user.get("telegram_id")
     if tg_id:
         msg = (
-            f"❌ *تم رفض حسابك في MERO HOST*\n"
+            f"❌ *تم رفض حسابك في مزاجي*\n"
             f"👤 المستخدم: `{username}`\n"
             f"للتواصل مع الدعم: {ADMIN_TELEGRAM_USERNAME}"
         )
@@ -743,7 +766,7 @@ def telegram_webhook():
             tg_id = db["users"][username].get("telegram_id")
             if tg_id:
                 msg = (
-                    f"🎉 *تم قبول حسابك في MERO HOST!*\n"
+                    f"🎉 *تم قبول حسابك في مزاجي!*\n"
                     f"👤 المستخدم: `{username}`\n"
                     f"✅ يمكنك الآن تسجيل الدخول."
                 )
@@ -770,7 +793,7 @@ def telegram_webhook():
             tg_id = db["users"][username].get("telegram_id")
             if tg_id:
                 msg = (
-                    f"❌ *تم رفض حسابك في MERO HOST*\n"
+                    f"❌ *تم رفض حسابك في مزاجي*\n"
                     f"👤 المستخدم: `{username}`\n"
                     f"للتواصل مع الدعم: {ADMIN_TELEGRAM_USERNAME}"
                 )

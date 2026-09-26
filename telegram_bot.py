@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-𝙺𝙸𝙽𝙶 𝙼𝙾𝙳 - بوت التحكم الكامل مع دعم PHP و Python و Node.js
-طُوِّر بواسطة: ᗴᒪᗰOᗪᗰᗴᑎ | @K_I_G_M
+مزاجي - بوت التحكم الكامل مع دعم PHP و Python و Node.js
+طُوِّر بواسطة: ᗴᒪᗰOᗪᗰᗴᑎ | @zzmmkj
 """
 
 import os
@@ -20,7 +20,7 @@ API_BASE_URL = os.environ.get("API_BASE_URL", "https://mero-host.onrender.com")
 ADMIN_TELEGRAM_IDS = [8394089237]
 
 # معلومات المطور
-DEVELOPER_INFO = "🛠 طُوِّر بواسطة: *𝙺𝙸𝙽𝙶 𝙼𝙾𝙳*\n📬 تواصل: @K_I_G_M"
+DEVELOPER_INFO = "🛠 طُوِّر بواسطة: *مزاجي*\n📬 تواصل: @zzmmkj"
 
 # ========== حالات المحادثة ==========
 (
@@ -96,11 +96,11 @@ async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, edi
             InlineKeyboardButton(bell, callback_data="admin_notifications"),
         ])
 
-    keyboard.append([InlineKeyboardButton("💬 تواصل مع المطور @I_tt_6", url="https://t.me/I_tt_6")])
+    keyboard.append([InlineKeyboardButton("💬 تواصل مع المطور @zzmmkj", url="https://t.me/zzmmkj")])
 
     text = (
         "━━━━━━━━━━━━━━━━━━━━\n"
-        "      𝙺𝙸𝙽𝙶 𝙼𝙾𝙳 🚀\n"
+        "      مزاجي 🚀\n"
         "━━━━━━━━━━━━━━━━━━━━\n"
     )
     if username:
@@ -221,7 +221,7 @@ async def show_admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     text = (
         "━━━━━━━━━━━━━━━━━━━━\n"
-        "  👑 لوحة إدارة 𝙼𝙴𝚁𝙾 𝙷𝙾𝚂𝚃\n"
+        "  👑 لوحة إدارة مزاجي\n"
         "━━━━━━━━━━━━━━━━━━━━\n"
         f"👥 المستخدمين: *{len(users)}*\n"
         f"🔔 طلبات معلقة: *{pending_count}*\n"
@@ -310,14 +310,14 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     keyboard = [
         [InlineKeyboardButton("🔑 إدخال API Key", callback_data="enter_api")],
-        [InlineKeyboardButton("💬 تواصل مع المطور @I_tt_6", url="https://t.me/I_tt_6")],
+        [InlineKeyboardButton("💬 تواصل مع المطور @zzmmkj", url="https://t.me/zzmmkj")],
     ]
     await update.message.reply_text(
         "━━━━━━━━━━━━━━━━━━━━\n"
-        "      𝙼𝙴𝚁𝙾 𝙷𝙾𝚂𝚃 🚀\n"
+        "      مزاجي 🚀\n"
         "━━━━━━━━━━━━━━━━━━━━\n"
         "للاشتراك والحصول على حساب:\n"
-        "📬 تواصل مع المطور: @I_tt_6\n\n"
+        "📬 تواصل مع المطور: @zzmmkj\n\n"
         f"{DEVELOPER_INFO}",
         parse_mode="Markdown",
         reply_markup=InlineKeyboardMarkup(keyboard),
@@ -329,11 +329,11 @@ async def handle_api_key(update: Update, context: ContextTypes.DEFAULT_TYPE):
     api_key = update.message.text.strip()
     result = api_request("/api/bot/verify", method="POST", data={"api_key": api_key})
     if not result or not result.get("success"):
-        keyboard = [[InlineKeyboardButton("💬 تواصل مع المطور", url="https://t.me/I_tt_6")]]
+        keyboard = [[InlineKeyboardButton("💬 تواصل مع المطور", url="https://t.me/zzmmkj")]]
         await update.message.reply_text(
             "❌ *مفتاح API غير صالح!*\n\n"
             "تحقق من الكود وحاول مرة أخرى\n"
-            "أو تواصل مع المطور: @I_tt_6",
+            "أو تواصل مع المطور: @zzmmkj",
             parse_mode="Markdown",
             reply_markup=InlineKeyboardMarkup(keyboard),
         )
@@ -971,7 +971,7 @@ def main():
     # أضف أوامر PHP
     application.add_handler(CommandHandler("php_run", php_run_command))
     
-    print("🚀 𝙺𝙸𝙽𝙶 𝙼𝙾𝙳 Bot يعمل مع دعم PHP و Python و Node.js...")
+    print("🚀 مزاجي Bot يعمل مع دعم PHP و Python و Node.js...")
     application.run_polling(drop_pending_updates=True)
 
 
