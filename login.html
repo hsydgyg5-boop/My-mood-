@@ -1,0 +1,341 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>𝙺𝙸𝙽𝙶 𝙼𝙾𝙳</title>
+<link href="https://fonts.googleapis.com/css2?family=Tajawal:wght@300;400;500;600;700;800;900&family=Orbitron:wght@400;700;900&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css">
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+:root{
+  --primary:#00c853;
+  --primary-dark:#00962d;
+  --purple:#7c3aed;
+  --purple-light:#a855f7;
+  --bg-deep:#050b12;
+  --bg-card:rgba(8,18,32,0.97);
+}
+body{
+  font-family:'Tajawal',sans-serif;
+  background:linear-gradient(135deg,#000000 0%,#001a0a 40%,#002d14 70%,#001508 100%);
+  min-height:100vh;display:flex;align-items:center;justify-content:center;
+  position:relative;overflow:hidden;
+}
+
+/* خلفية متحركة */
+.bg-wrap{position:fixed;inset:0;z-index:0;overflow:hidden}
+.orb{position:absolute;border-radius:50%;filter:blur(110px);opacity:.22}
+.orb1{width:500px;height:500px;background:radial-gradient(circle,#00c853,#004d20);top:-150px;right:-150px;animation:drift 10s ease-in-out infinite}
+.orb2{width:400px;height:400px;background:radial-gradient(circle,#7c3aed,#3b0764);bottom:-100px;left:-100px;animation:drift 13s ease-in-out infinite 2s}
+.orb3{width:280px;height:280px;background:radial-gradient(circle,#a855f7,#6d28d9);top:40%;left:60%;animation:drift 9s ease-in-out infinite 1s}
+
+/* شبكة */
+.grid-bg{position:absolute;inset:0;background-image:linear-gradient(rgba(0,200,83,.04) 1px,transparent 1px),linear-gradient(90deg,rgba(0,200,83,.04) 1px,transparent 1px);background-size:40px 40px}
+
+@keyframes drift{0%,100%{transform:translate(0,0) scale(1)}33%{transform:translate(20px,-15px) scale(1.05)}66%{transform:translate(-15px,20px) scale(.97)}}
+
+/* المحتوى */
+.container{position:relative;z-index:10;width:100%;max-width:420px;margin:0 auto;padding:16px}
+
+.card{
+  background:rgba(0,10,5,0.96);
+  backdrop-filter:blur(30px);
+  border:1px solid rgba(0,255,136,0.25);
+  border-radius:24px;
+  padding:50px 42px;
+  box-shadow:0 0 80px rgba(0,0,0,.85),0 0 40px rgba(0,255,136,.06) inset,0 0 0 1px rgba(0,255,136,.08) inset;
+  animation:slideUp .55s cubic-bezier(.34,1.56,.64,1);
+}
+@keyframes slideUp{from{opacity:0;transform:translateY(40px)}to{opacity:1;transform:none}}
+
+/* الشعار */
+.logo{text-align:center;margin-bottom:36px}
+.logo-avatar{
+  width:90px;height:90px;
+  border-radius:50%;
+  object-fit:cover;
+  border:2px solid #00ff88;
+  box-shadow:0 0 15px #00ff88, 0 0 35px rgba(0,255,136,.35);
+  margin-bottom:14px;
+  animation:avatarPulse 3s ease-in-out infinite;
+  display:block;margin-left:auto;margin-right:auto;
+}
+@keyframes avatarPulse{0%,100%{box-shadow:0 0 15px #00ff88,0 0 30px rgba(0,255,136,.3)}50%{box-shadow:0 0 25px #00ff88,0 0 60px rgba(0,255,136,.5),0 0 80px rgba(0,255,136,.15)}}
+
+.logo-text{
+  font-family:'Orbitron',sans-serif;font-size:1.35rem;font-weight:900;
+  background:linear-gradient(135deg,var(--primary),#4ade80,var(--purple-light));
+  -webkit-background-clip:text;background-clip:text;color:transparent;
+  letter-spacing:2px;display:block;margin-bottom:6px;
+}
+.logo-sub{font-size:.7rem;color:rgba(255,255,255,.3);letter-spacing:3px;text-transform:uppercase}
+
+/* خط فاصل مضيء */
+.divider{height:1px;background:linear-gradient(90deg,transparent,rgba(0,200,83,.3),rgba(124,58,237,.3),transparent);margin:0 0 28px}
+
+/* التابز */
+.tabs{display:flex;gap:0;background:rgba(0,0,0,.4);border-radius:16px;padding:4px;margin-bottom:28px;border:1px solid rgba(0,200,83,.12)}
+.tab-btn{
+  flex:1;padding:11px;border:none;background:transparent;color:rgba(255,255,255,.4);
+  font-family:'Tajawal',sans-serif;font-weight:700;font-size:.88rem;
+  cursor:pointer;border-radius:13px;transition:all .3s;display:flex;align-items:center;justify-content:center;gap:7px;
+}
+.tab-btn.active{
+  background:linear-gradient(135deg,rgba(0,200,83,.2),rgba(124,58,237,.2));
+  color:var(--primary);border:1px solid rgba(0,200,83,.3);
+  box-shadow:0 0 12px rgba(0,200,83,.15);
+}
+
+.form{display:none}
+.form.active{display:block;animation:fadeIn .3s ease}
+@keyframes fadeIn{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+
+/* الحقول */
+.form-group{margin-bottom:18px}
+.label{font-size:.8rem;color:rgba(255,255,255,.45);margin-bottom:8px;display:block;font-weight:600;letter-spacing:.5px}
+
+.input-wrap{
+  position:relative;display:flex;align-items:center;
+  background:rgba(0,0,0,.5);
+  border:1px solid rgba(0,200,83,.15);
+  border-radius:13px;transition:all .3s;
+}
+.input-wrap:focus-within{
+  border-color:rgba(0,200,83,.5);
+  background:rgba(0,200,83,.04);
+  box-shadow:0 0 0 3px rgba(0,200,83,.08),0 0 20px rgba(0,200,83,.05);
+}
+
+.icon{width:44px;display:flex;align-items:center;justify-content:center;color:rgba(0,200,83,.5);font-size:.9rem;flex-shrink:0}
+.inp{flex:1;background:transparent;border:none;outline:none;color:#e2e8f0;font-family:'Tajawal',sans-serif;font-size:.92rem;padding:12px 0}
+.inp::placeholder{color:rgba(255,255,255,.2)}
+.eye{background:none;border:none;cursor:pointer;color:rgba(255,255,255,.25);padding:0 14px;font-size:.88rem;transition:color .2s}
+.eye:hover{color:var(--primary)}
+
+/* زر الإرسال */
+.btn{
+  width:100%;padding:13px;margin-top:8px;
+  background:linear-gradient(135deg,var(--primary-dark),var(--primary),rgba(124,58,237,.6));
+  border:none;border-radius:13px;color:white;
+  font-family:'Tajawal',sans-serif;font-size:.97rem;font-weight:800;
+  letter-spacing:.5px;cursor:pointer;
+  display:flex;align-items:center;justify-content:center;gap:9px;
+  box-shadow:0 8px 25px rgba(0,200,83,.25);
+  transition:all .3s;position:relative;overflow:hidden;
+}
+.btn::before{content:'';position:absolute;inset:0;background:linear-gradient(135deg,rgba(255,255,255,.1),transparent);opacity:0;transition:.3s}
+.btn:hover::before{opacity:1}
+.btn:hover{transform:translateY(-2px);box-shadow:0 12px 35px rgba(0,200,83,.35)}
+.btn:active{transform:translateY(0)}
+.btn.loading{opacity:.6;pointer-events:none}
+
+/* الرسائل */
+.msg{padding:11px 14px;border-radius:11px;font-size:.83rem;margin-bottom:14px;display:none;align-items:center;gap:8px;line-height:1.6}
+.msg.error{background:rgba(239,68,68,.1);border:1px solid rgba(239,68,68,.25);color:#fca5a5;display:flex}
+.msg.success{background:rgba(0,200,83,.1);border:1px solid rgba(0,200,83,.25);color:#4ade80;display:flex}
+.msg.info{background:rgba(124,58,237,.1);border:1px solid rgba(124,58,237,.25);color:#c4b5fd;display:flex}
+
+/* قوة كلمة المرور */
+.strength{height:3px;background:rgba(255,255,255,.06);border-radius:4px;margin-top:6px;overflow:hidden}
+.strength-bar{height:100%;border-radius:4px;width:0;transition:width .4s,background .4s}
+
+/* الفوتر */
+.footer{text-align:center;margin-top:24px;font-size:.72rem;color:rgba(255,255,255,.2);border-top:1px solid rgba(0,200,83,.08);padding-top:18px}
+.dev-badge{display:inline-flex;align-items:center;gap:6px;background:rgba(0,200,83,.07);border:1px solid rgba(0,200,83,.15);border-radius:8px;padding:5px 14px;font-size:.68rem;color:var(--primary);margin-top:10px}
+
+@media(max-width:480px){.card{padding:28px 18px}.logo-text{font-size:1.1rem}}
+</style>
+</head>
+<body>
+
+<div class="bg-wrap">
+  <div class="grid-bg"></div>
+  <div class="orb orb1"></div>
+  <div class="orb orb2"></div>
+  <div class="orb orb3"></div>
+</div>
+
+<div class="container">
+<div class="card">
+
+<div class="logo">
+  <img class="logo-avatar" src="https://i.postimg.cc/YCGcSH9D/IMG-20260613-201939-738.jpg" alt="ELMODMEN HOST Logo">
+  <span class="logo-text">𝙺𝙸𝙽𝙶 𝙼𝙾𝙳</span>
+  <div class="logo-sub">Cloud Hosting Platform</div>
+</div>
+
+<div class="divider"></div>
+
+<div class="tabs">
+  <button class="tab-btn active" id="tL" onclick="switchTab('login')">
+    <i class="fas fa-sign-in-alt"></i> تسجيل دخول
+  </button>
+  <button class="tab-btn" id="tR" onclick="switchTab('register')">
+    <i class="fas fa-user-plus"></i> إنشاء حساب
+  </button>
+</div>
+
+<!-- فورم الدخول -->
+<div class="form active" id="loginForm">
+  <div class="msg" id="loginMsg"></div>
+  <div class="form-group">
+    <label class="label"><i class="fas fa-user"></i> اسم المستخدم</label>
+    <div class="input-wrap">
+      <div class="icon"><i class="fas fa-user"></i></div>
+      <input class="inp" id="lUser" type="text" placeholder="اسم المستخدم" autocomplete="username" onkeydown="if(event.key==='Enter')doLogin()">
+    </div>
+  </div>
+  <div class="form-group">
+    <label class="label"><i class="fas fa-lock"></i> كلمة المرور</label>
+    <div class="input-wrap">
+      <div class="icon"><i class="fas fa-lock"></i></div>
+      <input class="inp" id="lPass" type="password" placeholder="كلمة المرور" autocomplete="current-password" onkeydown="if(event.key==='Enter')doLogin()">
+      <button class="eye" onclick="toggleEye('lPass',this)"><i class="fas fa-eye"></i></button>
+    </div>
+  </div>
+  <button class="btn" id="lBtn" onclick="doLogin()">
+    <i class="fas fa-arrow-right-to-bracket"></i> دخول
+  </button>
+</div>
+
+<!-- فورم التسجيل -->
+<div class="form" id="registerForm">
+  <div class="msg" id="regMsg"></div>
+  <div class="form-group">
+    <label class="label"><i class="fas fa-user"></i> اسم المستخدم</label>
+    <div class="input-wrap">
+      <div class="icon"><i class="fas fa-user"></i></div>
+      <input class="inp" id="rUser" type="text" placeholder="3 أحرف على الأقل" autocomplete="username">
+    </div>
+  </div>
+  <div class="form-group">
+    <label class="label"><i class="fas fa-lock"></i> كلمة المرور</label>
+    <div class="input-wrap">
+      <div class="icon"><i class="fas fa-lock"></i></div>
+      <input class="inp" id="rPass" type="password" placeholder="4 أحرف على الأقل" autocomplete="new-password" oninput="checkStrength(this.value)">
+      <button class="eye" onclick="toggleEye('rPass',this)"><i class="fas fa-eye"></i></button>
+    </div>
+    <div class="strength"><div class="strength-bar" id="sBar"></div></div>
+  </div>
+  <div class="form-group">
+    <label class="label"><i class="fas fa-shield"></i> تأكيد كلمة المرور</label>
+    <div class="input-wrap">
+      <div class="icon"><i class="fas fa-shield-halved"></i></div>
+      <input class="inp" id="rPassC" type="password" placeholder="أعد كتابة كلمة المرور" autocomplete="new-password" onkeydown="if(event.key==='Enter')doRegister()">
+      <button class="eye" onclick="toggleEye('rPassC',this)"><i class="fas fa-eye"></i></button>
+    </div>
+  </div>
+  <button class="btn" id="rBtn" onclick="doRegister()">
+    <i class="fas fa-user-plus"></i> إنشاء الحساب
+  </button>
+</div>
+
+<div class="footer">
+  𝙺𝙸𝙽𝙶 𝙼𝙾𝙳 &copy; 2025
+  <div class="dev-badge">
+    <i class="fab fa-telegram"></i>
+    <a href="https://t.me/K_I_G_M" target="_blank" style="color:var(--primary);text-decoration:none">@K_I_G_M</a>
+  </div>
+</div>
+
+</div>
+</div>
+
+<script>
+function switchTab(t){
+  ['login','register'].forEach(x=>{
+    document.getElementById(x+'Form').classList.toggle('active',x===t);
+    document.getElementById(x==='login'?'tL':'tR').classList.toggle('active',x===t);
+  });
+  clearMsgs();
+}
+function clearMsgs(){
+  ['loginMsg','regMsg'].forEach(id=>{
+    const el=document.getElementById(id);
+    if(el){el.className='msg';el.innerHTML='';}
+  });
+}
+function showMsg(id,txt,type){
+  const el=document.getElementById(id);
+  const icons={error:'fa-circle-exclamation',success:'fa-circle-check',info:'fa-clock'};
+  el.className=`msg ${type}`;
+  el.innerHTML=`<i class="fas ${icons[type]||'fa-info-circle'}"></i> ${txt}`;
+}
+function toggleEye(id,btn){
+  const inp=document.getElementById(id);
+  inp.type=inp.type==='password'?'text':'password';
+  btn.innerHTML=`<i class="fas fa-eye${inp.type==='password'?'-slash':''}"></i>`;
+}
+function checkStrength(v){
+  const b=document.getElementById('sBar');
+  let s=0;
+  if(v.length>=4)s++;
+  if(v.length>=8)s++;
+  if(/[A-Z0-9]/.test(v))s++;
+  if(/[^a-zA-Z0-9]/.test(v))s++;
+  const cols=['#ef4444','#f97316','#eab308','#00c853'];
+  const ws=['20%','45%','70%','100%'];
+  b.style.background=v.length?(cols[s-1]||'#ef4444'):'transparent';
+  b.style.width=v.length?(ws[s-1]||'10%'):'0';
+}
+
+async function doLogin(){
+  const u=document.getElementById('lUser').value.trim();
+  const p=document.getElementById('lPass').value.trim();
+  if(!u||!p){showMsg('loginMsg','يرجى ملء جميع الحقول','error');return;}
+  const btn=document.getElementById('lBtn');
+  btn.classList.add('loading');
+  btn.innerHTML='<i class="fas fa-spinner fa-spin"></i> جاري التحقق...';
+  try{
+    const r=await fetch('/api/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:u,password:p})});
+    const d=await r.json();
+    if(d.success){
+      showMsg('loginMsg','✅ تم تسجيل الدخول!','success');
+      btn.innerHTML='<i class="fas fa-check"></i> جاري التوجيه...';
+      setTimeout(()=>window.location.href=d.redirect||'/',800);
+    }else{
+      showMsg('loginMsg',d.message||'بيانات غير صحيحة', d.message&&d.message.includes('قيد المراجعة')?'info':'error');
+      btn.classList.remove('loading');
+      btn.innerHTML='<i class="fas fa-arrow-right-to-bracket"></i> دخول';
+    }
+  }catch(e){
+    showMsg('loginMsg','خطأ في الاتصال','error');
+    btn.classList.remove('loading');
+    btn.innerHTML='<i class="fas fa-arrow-right-to-bracket"></i> دخول';
+  }
+}
+
+async function doRegister(){
+  const u=document.getElementById('rUser').value.trim();
+  const p=document.getElementById('rPass').value.trim();
+  const c=document.getElementById('rPassC').value.trim();
+  if(!u||!p){showMsg('regMsg','يرجى ملء جميع الحقول','error');return;}
+  if(u.length<3){showMsg('regMsg','اسم المستخدم 3 أحرف على الأقل','error');return;}
+  if(p.length<4){showMsg('regMsg','كلمة المرور 4 أحرف على الأقل','error');return;}
+  if(p!==c){showMsg('regMsg','كلمتا المرور غير متطابقتين','error');return;}
+  const btn=document.getElementById('rBtn');
+  btn.classList.add('loading');
+  btn.innerHTML='<i class="fas fa-spinner fa-spin"></i> جاري الإرسال...';
+  try{
+    const r=await fetch('/api/register',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:u,password:p})});
+    const d=await r.json();
+    if(d.success){
+      showMsg('regMsg','⏳ تم إرسال طلبك! سيتم مراجعته من قِبل المسؤول وستُعلم بالنتيجة.','info');
+      btn.innerHTML='<i class="fas fa-check"></i> تم الإرسال!';
+    }else{
+      showMsg('regMsg',d.message||'فشل الإنشاء','error');
+      btn.classList.remove('loading');
+      btn.innerHTML='<i class="fas fa-user-plus"></i> إنشاء الحساب';
+    }
+  }catch(e){
+    showMsg('regMsg','خطأ في الاتصال','error');
+    btn.classList.remove('loading');
+    btn.innerHTML='<i class="fas fa-user-plus"></i> إنشاء الحساب';
+  }
+}
+
+fetch('/api/current_user').then(r=>r.json()).then(d=>{if(d.success)window.location.href='/';}).catch(()=>{});
+</script>
+<script src="https://replit-cdn.com/replit-pill/replit-pill.global.js" data-referral-code="q65j4wbz2bxs" data-repl-id="84c35fa1-fa64-4994-bc0e-9d7cebdd8e0d"></script></body>
+</html>
