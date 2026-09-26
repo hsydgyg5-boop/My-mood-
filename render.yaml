@@ -1,6 +1,6 @@
 services:
   - type: web
-    name: mero-host
+    name: mazagi-host
     env: python
     buildCommand: pip install -r requirements.txt
     startCommand: gunicorn app:app --timeout 120 --workers 2

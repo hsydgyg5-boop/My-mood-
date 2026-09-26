@@ -74,5 +74,5 @@ if __name__ == "__main__":
         print("استخدام: python telegram_bot_runner.py <TOKEN> [BOT_NAME]")
         sys.exit(1)
     token = sys.argv[1]
-    bot_name = sys.argv[2] if len(sys.argv) > 2 else "mero_host_bot"
+    bot_name = sys.argv[2] if len(sys.argv) > 2 else "mazagi_host_bot"
     run_bot(token, bot_name)

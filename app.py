@@ -89,8 +89,19 @@ def load_db():
         try:
             with open(DB_FILE, 'r', encoding='utf-8') as f:
                 data = json.load(f)
-                if "plans" not in data:
-                    data["plans"] = {}
+                # ضمان وجود بنية قاعدة البيانات والخطط الافتراضية حتى لو كانت db.json جديدة أو فارغة.
+                default_plans = {
+                    "free": {"name": "🎁 مجاني", "storage": 512000, "ram": 256, "cpu": 0.5, "max_servers": 2, "price": 0},
+                    "4gb": {"name": "💎 4 جيجا", "storage": 4096000, "ram": 1024, "cpu": 1, "max_servers": 5, "price": 5},
+                    "10gb": {"name": "💎 10 جيجا", "storage": 10240000, "ram": 2048, "cpu": 2, "max_servers": 10, "price": 10},
+                    "40gb": {"name": "💎 40 جيجا", "storage": 40960000, "ram": 4096, "cpu": 4, "max_servers": 20, "price": 25}
+                }
+                data.setdefault("users", {})
+                data.setdefault("servers", {})
+                data.setdefault("logs", [])
+                data.setdefault("plans", {})
+                for plan_id, plan_data in default_plans.items():
+                    data["plans"].setdefault(plan_id, plan_data)
 
                 # إصلاح حساب الأدمن تلقائياً إذا كانت قاعدة البيانات القديمة لا تحتويه.
                 # لا يتم حذف أو تعديل أي مستخدم موجود.
@@ -528,8 +539,6 @@ def _check_admin_access():
 def home():
     if 'username' not in session:
         return redirect('/login')
-    if is_admin(session['username']):
-        return redirect('/admin')
     return redirect('/dashboard')
 
 @app.route('/login')
@@ -619,7 +628,7 @@ def api_login():
         session.permanent = True
         db["users"][ADMIN_USERNAME]["last_login"] = str(datetime.now())
         save_db(db)
-        return jsonify({"success": True, "redirect": "/admin", "is_admin": True})
+        return jsonify({"success": True, "redirect": "/dashboard", "is_admin": True})
 
     user = db["users"].get(username)
     if not user:

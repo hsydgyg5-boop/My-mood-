@@ -116,6 +116,22 @@
             transform: translateY(-1px);
         }
 
+        .admin-btn {
+            display: none;
+            background: rgba(0, 229, 255, 0.12);
+            border: 1px solid rgba(0, 229, 255, 0.45);
+            color: #00e5ff;
+            padding: 6px 16px;
+            border-radius: 40px;
+            font-size: 0.75rem;
+            font-weight: 700;
+            cursor: pointer;
+            transition: 0.2s;
+            align-items: center;
+            gap: 8px;
+        }
+        .admin-btn:hover { background: rgba(0, 229, 255, 0.2); transform: translateY(-1px); }
+
         .container {
             max-width: 1400px;
             margin: 0 auto;
@@ -867,6 +883,7 @@
     </div>
     <div class="user-section">
         <div class="user-greeting"><i class="far fa-user-circle"></i> مرحباً، <strong id="username">...</strong></div>
+        <button class="admin-btn" id="adminPanelBtn" onclick="window.location.href='/admin'"><i class="fas fa-shield-halved"></i> لوحة الإدارة</button>
         <button class="logout-btn" onclick="logout()"><i class="fas fa-sign-out-alt"></i> خروج</button>
     </div>
 </div>
@@ -1188,7 +1205,8 @@
             const d = await r.json(); 
             if(!d.success) window.location.href='/login'; 
             else { 
-                document.getElementById('username').innerText = d.username; 
+                document.getElementById('username').innerText = d.username;
+                if (d.is_admin) document.getElementById('adminPanelBtn').style.display = 'inline-flex'; 
                 loadServers(); 
                 fetchMetrics(); 
                 setInterval(fetchMetrics, 8000); 

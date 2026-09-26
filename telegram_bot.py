@@ -14,7 +14,7 @@ from telegram.ext import (
 
 # ========== إعدادات البوت ==========
 BOT_TOKEN = "8107118673:AAG6xUifqFD5qtCWZMy_D9qEmC8HOCx4DBo"
-API_BASE_URL = os.environ.get("API_BASE_URL", "https://mero-host.onrender.com")
+API_BASE_URL = os.environ.get("API_BASE_URL", "https://skkbsmdh.up.railway.app")
 
 # إيدي الأدمن على تليجرام
 ADMIN_TELEGRAM_IDS = [8394089237]
@@ -520,7 +520,7 @@ async def run_php_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "مثال:\n"
         "```php\n"
         "echo 'Hello World!';\n"
-        "$name = 'MERO';\n"
+        "$name = 'MAZAGI';\n"
         "echo 'مرحباً ' . $name;\n"
         "```\n\n"
         "🔄 أو استخدم /cancel للإلغاء",
@@ -726,7 +726,7 @@ async def handle_php_filename(update: Update, context: ContextTypes.DEFAULT_TYPE
         "أرسل كود PHP كامل (بدون <?php و ?>):\n\n"
         "مثال:\n"
         "```php\n"
-        "echo 'Hello from MERO!';\n"
+        "echo 'Hello from MAZAGI!';\n"
         "```\n\n"
         "🔄 أو استخدم /cancel للإلغاء",
         parse_mode="Markdown"
