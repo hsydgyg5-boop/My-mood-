@@ -14,8 +14,10 @@ import signal
 import psutil
 import socket
 import tempfile
+import ast
 from datetime import datetime, timedelta
 from flask import Flask, send_from_directory, request, jsonify, session, redirect, make_response
+from werkzeug.utils import secure_filename
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 USERS_DIR = os.path.join(BASE_DIR, "USERS")
@@ -33,13 +35,13 @@ app.config['SESSION_COOKIE_HTTPONLY'] = True
 app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
 
 # ============== بيانات المسؤول ==============
-ADMIN_USERNAME = "8075573334"
-ADMIN_PASSWORD_RAW = "8075573334"
+ADMIN_USERNAME = "zzmmkj"
+ADMIN_PASSWORD_RAW = "AASS1122@@"
 
 # ============== إعدادات البوت والإشعارات ==============
 BOT_TOKEN = "8669754436:AAG-XGfy4I_-X5FKDMb5DMDzhnowT3-wnSE"
 ADMIN_TELEGRAM_ID = 8394089237
-ADMIN_TELEGRAM_USERNAME = "@K_I_G_M"
+ADMIN_TELEGRAM_USERNAME = "@zzmmkj"
 
 # ============== دوال الإشعارات ==============
 def notify_admin(message: str):
@@ -89,8 +91,42 @@ def load_db():
         try:
             with open(DB_FILE, 'r', encoding='utf-8') as f:
                 data = json.load(f)
-                if "plans" not in data:
-                    data["plans"] = {}
+                # ضمان وجود بنية قاعدة البيانات والخطط الافتراضية حتى لو كانت db.json جديدة أو فارغة.
+                default_plans = {
+                    "free": {"name": "🎁 مجاني", "storage": 512000, "ram": 256, "cpu": 0.5, "max_servers": 2, "price": 0},
+                    "4gb": {"name": "💎 4 جيجا", "storage": 4096000, "ram": 1024, "cpu": 1, "max_servers": 5, "price": 5},
+                    "10gb": {"name": "💎 10 جيجا", "storage": 10240000, "ram": 2048, "cpu": 2, "max_servers": 10, "price": 10},
+                    "40gb": {"name": "💎 40 جيجا", "storage": 40960000, "ram": 4096, "cpu": 4, "max_servers": 20, "price": 25}
+                }
+                data.setdefault("users", {})
+                data.setdefault("servers", {})
+                data.setdefault("logs", [])
+                data.setdefault("plans", {})
+                for plan_id, plan_data in default_plans.items():
+                    data["plans"].setdefault(plan_id, plan_data)
+
+                # إصلاح حساب الأدمن تلقائياً إذا كانت قاعدة البيانات القديمة لا تحتويه.
+                # لا يتم حذف أو تعديل أي مستخدم موجود.
+                if ADMIN_USERNAME not in data.get("users", {}):
+                    admin_hash = hashlib.sha256(ADMIN_PASSWORD_RAW.encode()).hexdigest()
+                    data.setdefault("users", {})[ADMIN_USERNAME] = {
+                        "password": admin_hash,
+                        "is_admin": True,
+                        "created_at": str(datetime.now()),
+                        "max_servers": 999999,
+                        "expiry_days": 3650,
+                        "last_login": None,
+                        "telegram_id": None,
+                        "api_key": None,
+                        "storage_limit": 10240,
+                        "plan": "admin",
+                        "status": "approved"
+                    }
+                    save_db(data)
+                else:
+                    # ضمان صلاحيات الأدمن بدون تغيير كلمة مرور الحساب الموجود.
+                    data["users"][ADMIN_USERNAME]["is_admin"] = True
+                    data["users"][ADMIN_USERNAME].setdefault("status", "approved")
                 return data
         except Exception:
             pass
@@ -267,50 +303,169 @@ def detect_main_file(srv_path: str, server_type: str) -> str:
         return py_files[0] if py_files else ""
 
 # ============== تثبيت تلقائي للمكتبات ==============
+# أسماء الاستيراد الشائعة التي تختلف عن اسم الحزمة في PyPI.
+PYTHON_PACKAGE_MAP = {
+    "telebot": "pyTelegramBotAPI",
+    "telegram": "python-telegram-bot",
+    "bs4": "beautifulsoup4",
+    "Crypto": "pycryptodome",
+    "PIL": "Pillow",
+    "cv2": "opencv-python",
+    "dotenv": "python-dotenv",
+    "yaml": "PyYAML",
+    "dns": "dnspython",
+    "jwt": "PyJWT",
+    "google": "google-api-python-client",
+    "googleapiclient": "google-api-python-client",
+    "selenium": "selenium",
+    "discord": "discord.py",
+    "discord_webhook": "discord-webhook",
+    "flask": "Flask",
+    "fastapi": "fastapi",
+    "uvicorn": "uvicorn",
+    "aiohttp": "aiohttp",
+    "httpx": "httpx",
+    "bs4": "beautifulsoup4",
+    "lxml": "lxml",
+    "pandas": "pandas",
+    "numpy": "numpy",
+    "openpyxl": "openpyxl",
+    "qrcode": "qrcode",
+    "rich": "rich",
+    "colorama": "colorama",
+    "fake_useragent": "fake-useragent",
+    "user_agent": "user-agent",
+    "jwt": "PyJWT",
+    "cryptography": "cryptography",
+}
+
+PYTHON_STDLIB = set(getattr(sys, "stdlib_module_names", set())) | {
+    "__future__", "typing_extensions"
+}
+
+
+def _python_imports_from_file(py_file):
+    """استخراج أسماء المكتبات الخارجية من ملف Python بدون تشغيله."""
+    modules = set()
+    try:
+        with open(py_file, "r", encoding="utf-8", errors="ignore") as f:
+            tree = ast.parse(f.read(), filename=py_file)
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    modules.add(alias.name.split('.')[0])
+            elif isinstance(node, ast.ImportFrom) and node.module:
+                modules.add(node.module.split('.')[0])
+    except Exception:
+        # إذا كان الملف فيه خطأ صياغة، التشغيل نفسه سيعرض الخطأ للمستخدم.
+        return set()
+    return modules
+
+
+def detect_python_packages(srv_path):
+    """يحدد المكتبات الخارجية من كل ملفات .py الموجودة في السيرفر."""
+    imports = set()
+    for root, dirs, files in os.walk(srv_path):
+        # لا نفحص البيئة الافتراضية أو مجلدات cache.
+        dirs[:] = [d for d in dirs if d not in {".venv", "venv", "__pycache__", ".git"}]
+        for name in files:
+            if name.endswith(".py"):
+                imports.update(_python_imports_from_file(os.path.join(root, name)))
+
+    local_modules = set()
+    for root, dirs, files in os.walk(srv_path):
+        dirs[:] = [d for d in dirs if d not in {".venv", "venv", "__pycache__", ".git"}]
+        for name in files:
+            if name.endswith(".py"):
+                local_modules.add(name[:-3])
+        for d in dirs:
+            if os.path.exists(os.path.join(root, d, "__init__.py")):
+                local_modules.add(d)
+
+    packages = []
+    for module in sorted(imports):
+        if module in PYTHON_STDLIB or module in local_modules:
+            continue
+        packages.append(PYTHON_PACKAGE_MAP.get(module, module))
+    # إزالة التكرار مع الحفاظ على الترتيب.
+    return list(dict.fromkeys(packages))
+
+
+def ensure_python_environment(srv_path, log_file=None):
+    """ينشئ .venv داخل السيرفر ويثبت المكتبات تلقائياً.
+    إذا كان المستخدم رفع requirements.txt نستخدمه كما هو؛ وإلا ننشئه تلقائياً من imports.
+    """
+    try:
+        venv_dir = os.path.join(srv_path, ".venv")
+        venv_python = os.path.join(venv_dir, "Scripts", "python.exe") if os.name == "nt" else os.path.join(venv_dir, "bin", "python")
+
+        if not os.path.exists(venv_python):
+            if log_file:
+                log_file.write("\n🧰 إنشاء بيئة Python خاصة بالسيرفر...\n")
+                log_file.flush()
+            subprocess.run([sys.executable, "-m", "venv", venv_dir], cwd=srv_path, stdout=log_file or subprocess.DEVNULL, stderr=subprocess.STDOUT, timeout=120, check=False)
+
+        if not os.path.exists(venv_python):
+            # fallback إذا venv غير متاح في بيئة الاستضافة.
+            venv_python = sys.executable
+
+        req_file = os.path.join(srv_path, "requirements.txt")
+        generated = False
+        if not os.path.exists(req_file):
+            packages = detect_python_packages(srv_path)
+            with open(req_file, "w", encoding="utf-8") as rf:
+                rf.write("\n".join(packages) + ("\n" if packages else ""))
+            generated = True
+            if log_file:
+                log_file.write(f"📦 تم إنشاء requirements.txt تلقائياً ({len(packages)} مكتبة)\n")
+                if packages:
+                    log_file.write("   " + ", ".join(packages) + "\n")
+                log_file.flush()
+
+        # إذا كان الملف موجوداً وفارغاً، لا نثبت شيئاً.
+        try:
+            with open(req_file, "r", encoding="utf-8", errors="ignore") as rf:
+                has_requirements = bool(rf.read().strip())
+        except Exception:
+            has_requirements = False
+
+        if has_requirements:
+            if log_file:
+                log_file.write("📦 تثبيت مكتبات Python تلقائياً...\n")
+                log_file.flush()
+            cmd = [venv_python, "-m", "pip", "install", "--disable-pip-version-check", "-r", req_file]
+            proc = subprocess.run(cmd, cwd=srv_path, stdout=log_file or subprocess.DEVNULL, stderr=subprocess.STDOUT, timeout=300, check=False)
+            if log_file:
+                log_file.write("✅ اكتمل تثبيت المكتبات\n" if proc.returncode == 0 else "⚠️ بعض المكتبات لم تثبت بنجاح\n")
+                log_file.flush()
+        return venv_python
+    except Exception as e:
+        if log_file:
+            log_file.write(f"\n⚠️ التثبيت التلقائي: {e}\n")
+            log_file.flush()
+        return sys.executable
+
+
 def auto_install_deps(srv_path: str, server_type: str, log_file):
     try:
         if server_type == "Node.js":
             pkg = os.path.join(srv_path, "package.json")
             if os.path.exists(pkg):
-                log_file.write(f"\n📦 تثبيت node_modules...\n")
+                log_file.write("\n📦 تثبيت node_modules تلقائياً...\n")
                 log_file.flush()
-                proc = subprocess.Popen(
-                    ["npm", "install"],
-                    cwd=srv_path,
-                    stdout=log_file,
-                    stderr=subprocess.STDOUT,
-                    env=os.environ.copy()
-                )
-                proc.wait(timeout=120)
-                log_file.write("✅ تم تثبيت node_modules\n")
+                proc = subprocess.Popen(["npm", "install"], cwd=srv_path, stdout=log_file, stderr=subprocess.STDOUT, env=os.environ.copy())
+                proc.wait(timeout=300)
+                log_file.write("✅ تم تثبيت node_modules\n" if proc.returncode == 0 else "⚠️ فشل npm install\n")
         elif server_type == "Python":
-            req = os.path.join(srv_path, "requirements.txt")
-            if os.path.exists(req):
-                log_file.write(f"\n📦 تثبيت requirements.txt...\n")
-                log_file.flush()
-                proc = subprocess.Popen(
-                    [sys.executable, "-m", "pip", "install", "-r", "requirements.txt"],
-                    cwd=srv_path,
-                    stdout=log_file,
-                    stderr=subprocess.STDOUT,
-                    env=os.environ.copy()
-                )
-                proc.wait(timeout=180)
-                log_file.write("✅ تم تثبيت المكتبات\n")
+            ensure_python_environment(srv_path, log_file)
         elif server_type == "PHP":
             composer_json = os.path.join(srv_path, "composer.json")
             if os.path.exists(composer_json):
-                log_file.write(f"\n📦 تثبيت PHP dependencies (composer)...\n")
+                log_file.write("\n📦 تثبيت PHP dependencies تلقائياً...\n")
                 log_file.flush()
-                proc = subprocess.Popen(
-                    ["composer", "install", "--no-dev", "--prefer-dist"],
-                    cwd=srv_path,
-                    stdout=log_file,
-                    stderr=subprocess.STDOUT,
-                    env=os.environ.copy()
-                )
-                proc.wait(timeout=180)
-                log_file.write("✅ تم تثبيت PHP dependencies\n")
+                proc = subprocess.Popen(["composer", "install", "--no-dev", "--prefer-dist"], cwd=srv_path, stdout=log_file, stderr=subprocess.STDOUT, env=os.environ.copy())
+                proc.wait(timeout=300)
+                log_file.write("✅ تم تثبيت PHP dependencies\n" if proc.returncode == 0 else "⚠️ فشل composer install\n")
     except Exception as e:
         log_file.write(f"\n⚠️ تثبيت تلقائي: {e}\n")
     log_file.flush()
@@ -367,7 +522,10 @@ def start_server_process(folder):
         elif server_type == "PHP":
             cmd = ["php", "-S", f"0.0.0.0:{port}", "-t", srv["path"]]
         else:
-            cmd = [sys.executable, "-u", main_file]
+            # قبل تشغيل Python: إنشاء البيئة الخاصة وتثبيت المكتبات تلقائياً.
+            with open(log_path, "a", encoding="utf-8") as dep_log:
+                python_bin = ensure_python_environment(srv["path"], dep_log)
+            cmd = [python_bin, "-u", main_file]
             
         proc = subprocess.Popen(
             cmd,
@@ -505,8 +663,6 @@ def _check_admin_access():
 def home():
     if 'username' not in session:
         return redirect('/login')
-    if is_admin(session['username']):
-        return redirect('/admin')
     return redirect('/dashboard')
 
 @app.route('/login')
@@ -566,7 +722,7 @@ def api_register():
     os.makedirs(os.path.join(user_dir, "SERVERS"), exist_ok=True)
 
     admin_msg = (
-        f"🔔 *طلب تسجيل جديد في MERO HOST!*\n"
+        f"🔔 *طلب تسجيل جديد في مزاجي!*\n"
         f"👤 المستخدم: `{username}`\n"
         f"📅 {datetime.now().strftime('%Y-%m-%d %H:%M')}\n"
         f"📱 تليجرام: {telegram_id or 'غير مرتبط'}\n\n"
@@ -596,7 +752,7 @@ def api_login():
         session.permanent = True
         db["users"][ADMIN_USERNAME]["last_login"] = str(datetime.now())
         save_db(db)
-        return jsonify({"success": True, "redirect": "/admin", "is_admin": True})
+        return jsonify({"success": True, "redirect": "/dashboard", "is_admin": True})
 
     user = db["users"].get(username)
     if not user:
@@ -660,7 +816,7 @@ def approve_user():
     tg_id = user.get("telegram_id")
     if tg_id:
         msg = (
-            f"🎉 *تم قبول حسابك في MERO HOST!*\n"
+            f"🎉 *تم قبول حسابك في مزاجي!*\n"
             f"👤 المستخدم: `{username}`\n"
             f"✅ يمكنك الآن تسجيل الدخول واستخدام خدماتنا.\n\n"
             f"🔗 {ADMIN_TELEGRAM_USERNAME}"
@@ -692,7 +848,7 @@ def reject_user():
     tg_id = user.get("telegram_id")
     if tg_id:
         msg = (
-            f"❌ *تم رفض حسابك في MERO HOST*\n"
+            f"❌ *تم رفض حسابك في مزاجي*\n"
             f"👤 المستخدم: `{username}`\n"
             f"للتواصل مع الدعم: {ADMIN_TELEGRAM_USERNAME}"
         )
@@ -743,7 +899,7 @@ def telegram_webhook():
             tg_id = db["users"][username].get("telegram_id")
             if tg_id:
                 msg = (
-                    f"🎉 *تم قبول حسابك في MERO HOST!*\n"
+                    f"🎉 *تم قبول حسابك في مزاجي!*\n"
                     f"👤 المستخدم: `{username}`\n"
                     f"✅ يمكنك الآن تسجيل الدخول."
                 )
@@ -770,7 +926,7 @@ def telegram_webhook():
             tg_id = db["users"][username].get("telegram_id")
             if tg_id:
                 msg = (
-                    f"❌ *تم رفض حسابك في MERO HOST*\n"
+                    f"❌ *تم رفض حسابك في مزاجي*\n"
                     f"👤 المستخدم: `{username}`\n"
                     f"للتواصل مع الدعم: {ADMIN_TELEGRAM_USERNAME}"
                 )
@@ -1219,67 +1375,219 @@ def upload_files(folder):
         return jsonify({"success": False}), 401
     srv = db["servers"].get(folder)
     if not srv or srv["owner"] != session["username"]:
-        return jsonify({"success": False})
-    if not os.path.exists(srv["path"]):
-        os.makedirs(srv["path"], exist_ok=True)
+        return jsonify({"success": False, "message": "غير مصرح"}), 403
+    os.makedirs(srv["path"], exist_ok=True)
     files = request.files.getlist('files[]')
     if not files:
         return jsonify({"success": False, "message": "لا توجد ملفات"})
+
     uploaded = 0
     errors_list = []
-    server_type = srv.get("type", "Python")
-    
-    # كشف نوع السيرفر من الملفات المرفوعة
     detected_type = None
-    for f in files:
-        if f and f.filename:
-            if f.filename.endswith('.php'):
-                detected_type = "PHP"
-                break
-            elif f.filename.endswith('.js'):
-                detected_type = "Node.js"
-                break
-            elif f.filename.endswith('.py'):
-                detected_type = "Python"
-    
+
     for f in files:
         try:
-            if not f or not f.filename or '..' in f.filename:
+            if not f or not f.filename:
                 continue
-            save_path = os.path.join(srv["path"], f.filename)
+            filename = secure_filename(f.filename)
+            if not filename:
+                continue
+            ext = os.path.splitext(filename)[1].lower()
+            if ext == '.php':
+                detected_type = detected_type or "PHP"
+            elif ext == '.js':
+                detected_type = detected_type or "Node.js"
+            elif ext == '.py':
+                detected_type = detected_type or "Python"
+            save_path = os.path.join(srv["path"], filename)
             f.save(save_path)
             uploaded += 1
         except Exception as e:
             errors_list.append(str(e))
-    
-    # تحديث نوع السيرفر تلقائياً
-    if detected_type and srv.get("type") != detected_type:
+
+    if not uploaded:
+        return jsonify({"success": False, "message": "فشل الرفع", "errors": errors_list})
+
+    if detected_type:
         srv["type"] = detected_type
-        save_db(db)
-        print(f"✅ تم تغيير نوع السيرفر {srv['name']} إلى {detected_type} تلقائياً")
-    
-    if uploaded > 0:
-        # كشف تلقائي للملف الرئيسي
-        auto_detect_server_type(srv["path"], srv)
-        
-        log_path = os.path.join(srv["path"], "out.log")
-        threading.Thread(
-            target=_auto_install_after_upload,
-            args=(srv["path"], server_type, log_path),
-            daemon=True
-        ).start()
-        msg = f"✅ تم رفع {uploaded} ملف"
-        if errors_list:
-            msg += f" (⚠️ {len(errors_list)} تحذير)"
-        return jsonify({"success": True, "message": msg, "warnings": errors_list})
-    return jsonify({"success": False, "message": "فشل الرفع", "errors": errors_list})
+    auto_detect_server_type(srv["path"], srv)
+    save_db(db)
+
+    log_path = os.path.join(srv["path"], "out.log")
+    threading.Thread(
+        target=_auto_install_after_upload,
+        args=(srv["path"], srv.get("type", "Python"), log_path),
+        daemon=True
+    ).start()
+
+    msg = f"✅ تم رفع {uploaded} ملف"
+    if srv.get("type") == "Python":
+        msg += " — يتم إنشاء بيئة Python وتثبيت المكتبات تلقائياً"
+    if errors_list:
+        msg += f" (⚠️ {len(errors_list)} تحذير)"
+    return jsonify({"success": True, "message": msg, "warnings": errors_list})
+
 
 def _auto_install_after_upload(srv_path: str, server_type: str, log_path: str):
     try:
         with open(log_path, "a", encoding='utf-8') as lf:
             auto_install_deps(srv_path, server_type, lf)
-    except Exception:
-        pass
+    except Exception as e:
+        try:
+            with open(log_path, "a", encoding='utf-8') as lf:
+                lf.write(f"\n⚠️ {e}\n")
+        except Exception:
+            pass
+
+
+@app.route('/api/server/auto-upload', methods=['POST'])
+def auto_create_server_from_upload():
+    """رفع ملف مباشرة من لوحة المستخدم وإنشاء السيرفر تلقائياً."""
+    if "username" not in session:
+        return jsonify({"success": False, "message": "غير مصرح"}), 401
+
+    user = db["users"].get(session["username"])
+    if not user:
+        return jsonify({"success": False, "message": "مستخدم غير موجود"}), 404
+
+    user_srv_count = len([s for s in db["servers"].values() if s.get("owner") == session["username"]])
+    if user_srv_count >= user.get("max_servers", 2):
+        return jsonify({"success": False, "message": f"وصلت للحد الأقصى ({user.get('max_servers', 2)}) سيرفر."})
+
+    f = request.files.get('file')
+    if not f or not f.filename:
+        return jsonify({"success": False, "message": "اختر ملفاً أولاً"})
+
+    filename = secure_filename(f.filename)
+    if not filename:
+        return jsonify({"success": False, "message": "اسم الملف غير صالح"})
+
+    ext = os.path.splitext(filename)[1].lower()
+    if ext == '.py':
+        server_type = "Python"
+    elif ext == '.js':
+        server_type = "Node.js"
+    elif ext == '.php':
+        server_type = "PHP"
+    elif ext == '.zip':
+        server_type = "Python"
+    else:
+        return jsonify({"success": False, "message": "ارفع ملف Python أو ZIP أو JavaScript أو PHP"})
+
+    base_name = os.path.splitext(filename)[0]
+    safe_name = re.sub(r'[^a-zA-Z0-9_-]+', '', base_name) or "my-server"
+    server_name = base_name[:40] or "سيرفري الجديد"
+    folder = f"{session['username']}_{safe_name}_{int(time.time())}"
+    path = os.path.join(get_user_servers_dir(session["username"]), folder)
+    os.makedirs(path, exist_ok=True)
+
+    plan_id = user.get("plan", "free")
+    plan = db["plans"].get(plan_id, db["plans"]["free"])
+    assigned_port = get_assigned_port()
+    startup_file = filename if ext in {'.py', '.js', '.php'} else ""
+
+    try:
+        f.save(os.path.join(path, filename))
+        if ext == '.zip':
+            zip_path = os.path.join(path, filename)
+            with zipfile.ZipFile(zip_path, 'r') as zf:
+                if zf.testzip():
+                    raise ValueError("ملف ZIP تالف")
+                zf.extractall(path)
+            # تحديد نوع المشروع وملف التشغيل من المحتوى بعد فك الضغط.
+            if os.path.exists(os.path.join(path, "package.json")) or any(name.endswith('.js') for name in os.listdir(path)):
+                server_type = "Node.js"
+            elif any(name.endswith('.php') for name in os.listdir(path)):
+                server_type = "PHP"
+            else:
+                server_type = "Python"
+            startup_file = detect_main_file(path, server_type)
+
+        db["servers"][folder] = {
+            "name": server_name,
+            "owner": session["username"],
+            "path": path,
+            "type": server_type,
+            "status": "Stopped",
+            "created_at": str(datetime.now()),
+            "startup_file": startup_file,
+            "pid": None,
+            "port": assigned_port,
+            "plan": plan_id,
+            "storage_limit": plan["storage"],
+            "ram_limit": plan["ram"],
+            "cpu_limit": plan["cpu"]
+        }
+        save_db(db)
+
+        log_path = os.path.join(path, "out.log")
+        def install_and_start():
+            try:
+                with open(log_path, "a", encoding="utf-8") as lf:
+                    auto_install_deps(path, server_type, lf)
+                ok, start_msg = start_server_process(folder)
+                with open(log_path, "a", encoding="utf-8") as lf:
+                    lf.write(f"\n🚀 التشغيل التلقائي: {start_msg}\n")
+            except Exception as exc:
+                try:
+                    with open(log_path, "a", encoding="utf-8") as lf:
+                        lf.write(f"\n❌ التشغيل التلقائي: {exc}\n")
+                except Exception:
+                    pass
+        threading.Thread(target=install_and_start, daemon=True).start()
+        return jsonify({"success": True, "message": "✅ تم إنشاء السيرفر ورفع الملف — جاري تثبيت المكتبات وتشغيله تلقائياً", "folder": folder, "server_type": server_type})
+    except Exception as e:
+        shutil.rmtree(path, ignore_errors=True)
+        return jsonify({"success": False, "message": f"فشل إنشاء السيرفر: {e}"}), 500
+
+@app.route('/api/files/replace/<folder>/<path:filename>', methods=['POST'])
+def replace_file(folder, filename):
+    """استبدال ملف موجود مباشرة بدون حذفه أولاً."""
+    if "username" not in session:
+        return jsonify({"success": False, "message": "غير مصرح"}), 401
+    srv = db["servers"].get(folder)
+    if not srv or srv["owner"] != session["username"]:
+        return jsonify({"success": False, "message": "غير مصرح"}), 403
+    if not filename or '..' in filename or filename.startswith('/'):
+        return jsonify({"success": False, "message": "اسم ملف غير صالح"}), 400
+    target = os.path.join(srv["path"], filename)
+    if os.path.isdir(target):
+        return jsonify({"success": False, "message": "لا يمكن استبدال مجلد"}), 400
+    if not os.path.exists(target):
+        return jsonify({"success": False, "message": "الملف الأصلي غير موجود"}), 404
+    new_file = request.files.get('file')
+    if not new_file or not new_file.filename:
+        return jsonify({"success": False, "message": "اختر الملف الجديد أولاً"}), 400
+    try:
+        # نكتب إلى ملف مؤقت ثم نستبدل الملف ذرياً، حتى لا يبقى الملف ناقصاً إذا انقطع الرفع.
+        temp_path = target + '.replace_tmp'
+        new_file.save(temp_path)
+        os.replace(temp_path, target)
+
+        # إذا كان الملف المستبدل هو ملف التشغيل، أبقِ startup_file كما هو.
+        auto_detect_server_type(srv["path"], srv)
+        save_db(db)
+
+        # إعادة تثبيت الاعتمادات عند استبدال ملف Python/Node/PHP، في حال تغيّرت المتطلبات.
+        log_path = os.path.join(srv["path"], "out.log")
+        threading.Thread(
+            target=_auto_install_after_upload,
+            args=(srv["path"], srv.get("type", "Python"), log_path),
+            daemon=True
+        ).start()
+
+        return jsonify({
+            "success": True,
+            "message": f"✅ تم استبدال {filename} بنجاح"
+        })
+    except Exception as e:
+        try:
+            if os.path.exists(temp_path):
+                os.remove(temp_path)
+        except Exception:
+            pass
+        return jsonify({"success": False, "message": f"فشل الاستبدال: {e}"}), 500
+
 
 @app.route('/api/files/rename/<folder>', methods=['POST'])
 def rename_file(folder):

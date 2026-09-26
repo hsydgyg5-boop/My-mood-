@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=yes">
-    <title>𝙺𝙸𝙽𝙶 𝙼𝙾𝙳 - لوحة التحكم المتطورة</title>
+    <title>مزاجي - لوحة التحكم المتطورة</title>
     <link href="https://fonts.googleapis.com/css2?family=Tajawal:wght@300;400;500;600;700;800&family=Inter:opsz,wght@14..32,300;14..32,400;14..32,500;14..32,600;14..32,700&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
     <style>
@@ -115,6 +115,22 @@
             background: rgba(255, 70, 85, 0.25);
             transform: translateY(-1px);
         }
+
+        .admin-btn {
+            display: none;
+            background: rgba(0, 229, 255, 0.12);
+            border: 1px solid rgba(0, 229, 255, 0.45);
+            color: #00e5ff;
+            padding: 6px 16px;
+            border-radius: 40px;
+            font-size: 0.75rem;
+            font-weight: 700;
+            cursor: pointer;
+            transition: 0.2s;
+            align-items: center;
+            gap: 8px;
+        }
+        .admin-btn:hover { background: rgba(0, 229, 255, 0.2); transform: translateY(-1px); }
 
         .container {
             max-width: 1400px;
@@ -863,10 +879,11 @@
 <div class="navbar">
     <div class="logo">
         <div class="logo-icon"><i class="fas fa-crown"></i></div>
-        <span class="logo-text">𝙺𝙸𝙽𝙶 𝙼𝙾𝙳</span>
+        <span class="logo-text">مزاجي</span>
     </div>
     <div class="user-section">
         <div class="user-greeting"><i class="far fa-user-circle"></i> مرحباً، <strong id="username">...</strong></div>
+        <button class="admin-btn" id="adminPanelBtn" onclick="window.location.href='/admin'"><i class="fas fa-shield-halved"></i> لوحة الإدارة</button>
         <button class="logout-btn" onclick="logout()"><i class="fas fa-sign-out-alt"></i> خروج</button>
     </div>
 </div>
@@ -889,6 +906,10 @@
                 <button class="create-server-btn php" onclick="showCreateServerModal('PHP')">
                     <i class="fab fa-php"></i> خادم PHP
                 </button>
+                <button class="create-server-btn" style="background:linear-gradient(135deg,#7c3aed,#a855f7);" onclick="document.getElementById('autoServerUpload').click()">
+                    <i class="fas fa-cloud-arrow-up"></i> رفع ملف وتشغيله تلقائياً
+                </button>
+                <input type="file" id="autoServerUpload" accept=".py,.zip,.js,.php" style="display:none" onchange="autoCreateServer(this.files[0])">
             </div>
         </div>
         <div class="servers-grid" id="serversGrid"><div style="text-align:center; padding:60px; color:#9ca3cf;">جاري التحميل...</div></div>
@@ -968,7 +989,7 @@
 <!-- القائمة الجانبية (هامبرغر) - تحتوي على جميع التبويبات -->
 <div class="sidebar" id="sidebar">
     <div class="sidebar-header">
-        <div style="display: flex; align-items: center; gap: 12px;"><i class="fas fa-crown" style="font-size: 28px; color: #2d7aff;"></i><span style="font-weight:800; font-size:1.2rem;">𝙺𝙸𝙽𝙶 𝙼𝙾𝙳</span></div>
+        <div style="display: flex; align-items: center; gap: 12px;"><i class="fas fa-crown" style="font-size: 28px; color: #2d7aff;"></i><span style="font-weight:800; font-size:1.2rem;">مزاجي</span></div>
     </div>
     <div>
         <div class="sidebar-nav-item" data-nav="console"><i class="fas fa-terminal"></i> الكونسول</div>
@@ -977,7 +998,7 @@
         <div class="sidebar-nav-item" data-nav="settings"><i class="fas fa-sliders-h"></i> الإعدادات</div>
         <div class="sidebar-nav-item" data-nav="api"><i class="fas fa-key"></i> مفاتيح API</div>
     </div>
-    <div style="padding:24px 20px; font-size:0.7rem; color:#4b556b; margin-top: auto; border-top:1px solid rgba(255,255,255,0.05);"><i class="fas fa-shield-alt"></i> 𝙺𝙸𝙽𝙶 𝙼𝙾𝙳 v3</div>
+    <div style="padding:24px 20px; font-size:0.7rem; color:#4b556b; margin-top: auto; border-top:1px solid rgba(255,255,255,0.05);"><i class="fas fa-shield-alt"></i> مزاجي v3</div>
 </div>
 <div class="sidebar-overlay" id="sidebarOverlay"></div>
 
@@ -1112,7 +1133,7 @@
         } catch(e) { showToast('خطأ في الاتصال', 'error'); }
     }
     
-    function contactSupport(method) { window.open(`https://t.me/I_tt_6?text=شراء خطة ${selectedPlan.name} بـ ${selectedPlan.price}$ عبر ${method}`, '_blank'); closePlansModal(); }
+    function contactSupport(method) { window.open(`https://t.me/zzmmkj?text=شراء خطة ${selectedPlan.name} بـ ${selectedPlan.price}$ عبر ${method}`, '_blank'); closePlansModal(); }
 
     // ===== دوال إنشاء السيرفر (Python / PHP) =====
     function showCreateServerModal(type) {
@@ -1181,6 +1202,28 @@
         }
     }
 
+    // ===== رفع ملف وإنشاء سيرفر تلقائياً =====
+    async function autoCreateServer(file) {
+        if (!file) return;
+        const fd = new FormData();
+        fd.append('file', file);
+        showToast('⏳ جاري إنشاء السيرفر ورفع الملف وتثبيت المكتبات...', 'info');
+        try {
+            const r = await fetch('/api/server/auto-upload', { method:'POST', body:fd });
+            const d = await r.json();
+            if (d.success) {
+                showToast(d.message || '✅ تم إنشاء السيرفر تلقائياً', 'success');
+                await loadServers();
+            } else {
+                showToast(d.message || 'فشل إنشاء السيرفر', 'error');
+            }
+        } catch (e) {
+            showToast('خطأ في الاتصال بالسيرفر', 'error');
+        } finally {
+            document.getElementById('autoServerUpload').value = '';
+        }
+    }
+
     // ===== التوثيق والتحميل =====
     async function checkAuth() {
         try { 
@@ -1188,7 +1231,8 @@
             const d = await r.json(); 
             if(!d.success) window.location.href='/login'; 
             else { 
-                document.getElementById('username').innerText = d.username; 
+                document.getElementById('username').innerText = d.username;
+                if (d.is_admin) document.getElementById('adminPanelBtn').style.display = 'inline-flex'; 
                 loadServers(); 
                 fetchMetrics(); 
                 setInterval(fetchMetrics, 8000); 
@@ -1413,7 +1457,10 @@
             const r = await fetch(`/api/files/list/${currentServer.folder}`);
             const files = await r.json();
             if(files.length === 0) { tbody.innerHTML = '<tr><td colspan="4">لا توجد ملفات<\/td><\/tr>'; return; }
-            tbody.innerHTML = files.map(f => `<tr><td><input type="checkbox" class="file-checkbox" value="${escapeHtml(f.name)}"><\/td><td><i class="fas ${f.is_dir ? 'fa-folder' : 'fa-file'}"></i> ${escapeHtml(f.name)}<\/td><td>${f.size}<\/td><td class="file-actions">${!f.is_dir ? `<button class="file-btn edit" onclick="editFile('${escapeHtml(f.name)}')"><i class="fas fa-pen" style="font-size:0.7rem;"></i> تعديل</button>` : ''}<button class="file-btn" style="background:rgba(120,80,220,0.25);color:#b09dff;" onclick="openRenameModal('${escapeHtml(f.name)}')"><i class="fas fa-i-cursor" style="font-size:0.7rem;"></i> تغيير الاسم</button>${f.name.toLowerCase().endsWith('.zip') ? `<button class="file-btn" style="background:rgba(0,210,150,0.2);color:#00d296;" onclick="unzipFile('${escapeHtml(f.name)}')"><i class="fas fa-file-archive" style="font-size:0.7rem;"></i> فك الضغط</button>` : ''}<button class="file-btn delete" onclick="deleteFile('${escapeHtml(f.name)}')"><i class="fas fa-trash" style="font-size:0.7rem;"></i> حذف</button><\/td><\/tr>`).join('');
+            tbody.innerHTML = files.map(f => {
+                const jsName = JSON.stringify(f.name);
+                return `<tr><td><input type="checkbox" class="file-checkbox" value="${escapeHtml(f.name)}"><\/td><td><i class="fas ${f.is_dir ? 'fa-folder' : 'fa-file'}"></i> ${escapeHtml(f.name)}<\/td><td>${f.size}</td><td class="file-actions">${!f.is_dir ? `<button class="file-btn edit" onclick="editFile(${jsName})"><i class="fas fa-pen" style="font-size:0.7rem;"></i> تعديل</button><button class="file-btn" style="background:rgba(45,122,255,0.20);color:#63a4ff;" onclick="replaceFile(${jsName})"><i class="fas fa-repeat" style="font-size:0.7rem;"></i> استبدال الملف</button>` : ''}<button class="file-btn" style="background:rgba(120,80,220,0.25);color:#b09dff;" onclick="openRenameModal(${jsName})"><i class="fas fa-i-cursor" style="font-size:0.7rem;"></i> تغيير الاسم</button>${f.name.toLowerCase().endsWith('.zip') ? `<button class="file-btn" style="background:rgba(0,210,150,0.2);color:#00d296;" onclick="unzipFile(${jsName})"><i class="fas fa-file-archive" style="font-size:0.7rem;"></i> فك الضغط</button>` : ''}<button class="file-btn delete" onclick="deleteFile(${jsName})"><i class="fas fa-trash" style="font-size:0.7rem;"></i> حذف</button><\/td><\/tr>`;
+            }).join('');
         } catch(e) { tbody.innerHTML = '<tr><td colspan="4">خطأ<\/td><\/tr>'; }
     }
 
@@ -1437,6 +1484,38 @@
         document.getElementById('editorModal').classList.remove('active'); 
         currentFile=null; 
         loadFiles(); 
+    }
+
+    async function replaceFile(name) {
+        const input = document.createElement('input');
+        input.type = 'file';
+        input.style.display = 'none';
+        document.body.appendChild(input);
+        input.onchange = async () => {
+            const file = input.files && input.files[0];
+            if(!file) { input.remove(); return; }
+            if(!confirm(`استبدال الملف "${name}" بالملف "${file.name}"؟\nلن يتم حذف أي ملف آخر.`)) {
+                input.remove();
+                return;
+            }
+            const fd = new FormData();
+            fd.append('file', file);
+            try {
+                const r = await fetch(`/api/files/replace/${currentServer.folder}/${encodeURIComponent(name)}`, { method:'POST', body:fd });
+                const d = await r.json();
+                if(d.success) {
+                    showToast(d.message || 'تم استبدال الملف بنجاح', 'success');
+                    loadFiles();
+                } else {
+                    showToast(d.message || 'فشل استبدال الملف', 'error');
+                }
+            } catch(e) {
+                showToast('خطأ في الاتصال', 'error');
+            } finally {
+                input.remove();
+            }
+        };
+        input.click();
     }
 
     async function deleteFile(name) { 
