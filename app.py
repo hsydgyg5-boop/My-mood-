@@ -94,7 +94,7 @@ def get_pending_users_list():
 # IMPORTANT:
 # GitHub/الكود يحتوي فقط على التطبيق. بيانات المستخدمين والملفات تحفظ على Railway Volume.
 DB_FILE = os.path.join(DATA_DIR, "db.json")
-DB_SCHEMA_VERSION = 2
+DB_SCHEMA_VERSION = 3
 DB_MIGRATION_BACKUP_DIR = os.path.join(DATA_DIR, "_old_data_backup")
 
 DEFAULT_PLANS = {
