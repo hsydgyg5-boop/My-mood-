@@ -20,12 +20,16 @@ from datetime import datetime, timedelta
 from flask import Flask, send_from_directory, send_file, request, jsonify, session, redirect, make_response
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-# تخزين دائم: على Railway اربط Volume على /data. إذا لم يوجد Volume يرجع للمجلد المحلي.
-DATA_DIR = os.environ.get("MAZAGI_DATA_DIR", "/data" if os.path.isdir("/data") else BASE_DIR)
+# تخزين دائم معزول للنسخة الجديدة. هذا المسار منفصل عن أي قاعدة قديمة
+# موجودة على Railway Volume، لذلك لا يمكن للبيانات القديمة أن تعود بعد التحديث.
+DATA_ROOT_DIR = os.environ.get("MAZAGI_DATA_DIR", "/data" if os.path.isdir("/data") else BASE_DIR)
+DATA_DIR = os.path.join(DATA_ROOT_DIR, "MAZAGI_FRESH_DATABASE_20260927")
 try:
     os.makedirs(DATA_DIR, exist_ok=True)
 except Exception:
-    DATA_DIR = BASE_DIR
+    DATA_ROOT_DIR = BASE_DIR
+    DATA_DIR = os.path.join(DATA_ROOT_DIR, "MAZAGI_FRESH_DATABASE_20260927")
+    os.makedirs(DATA_DIR, exist_ok=True)
 USERS_DIR = os.path.join(DATA_DIR, "USERS")
 os.makedirs(USERS_DIR, exist_ok=True)
 
@@ -130,57 +134,40 @@ def _new_clean_db():
         "plans": {k: dict(v) for k, v in DEFAULT_PLANS.items()}
     }
 
-def _backup_legacy_data():
-    """يحفظ نسخة احتياطية من البيانات القديمة مرة واحدة قبل بدء القاعدة الجديدة."""
-    try:
-        os.makedirs(DB_MIGRATION_BACKUP_DIR, exist_ok=True)
-        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        if os.path.exists(DB_FILE):
-            shutil.copy2(DB_FILE, os.path.join(DB_MIGRATION_BACKUP_DIR, f"legacy_db_{stamp}.json"))
-        for dirname in ("USERS", "php_files"):
-            src_dir = os.path.join(DATA_DIR, dirname)
-            if os.path.exists(src_dir):
-                dst_dir = os.path.join(DB_MIGRATION_BACKUP_DIR, f"{dirname}_{stamp}")
-                shutil.move(src_dir, dst_dir)
-        print("ℹ️ تم أرشفة البيانات القديمة مرة واحدة وإنشاء قاعدة مزاجي جديدة.")
-    except Exception as e:
-        print(f"⚠️ تعذر أرشفة بعض البيانات القديمة: {e}")
-
 def load_db():
-    # إذا كانت DB القديمة بلا schema_version، نبدأ قاعدة جديدة مرة واحدة.
-    # القديمة لا تُحذف نهائياً: تُنقل إلى _old_data_backup حتى لا تضيع.
-    if os.path.exists(DB_FILE):
-        try:
-            with open(DB_FILE, "r", encoding="utf-8") as f:
-                existing = json.load(f)
-            if existing.get("schema_version") != DB_SCHEMA_VERSION:
-                _backup_legacy_data()
-        except Exception:
-            _backup_legacy_data()
-
+    """
+    يقرأ فقط قاعدة هذه النسخة من DATA_DIR المعزول.
+    لا يستورد ولا يرحّل أي قاعدة أو ملفات من النسخ القديمة.
+    عند أول تشغيل تُنشأ قاعدة جديدة تحتوي على حساب المسؤول فقط،
+    وبعد ذلك تبقى كل التعديلات محفوظة بشكل دائم على الـ Volume.
+    """
     if os.path.exists(DB_FILE):
         try:
             with open(DB_FILE, "r", encoding="utf-8") as f:
                 data = json.load(f)
+            if not isinstance(data, dict) or not isinstance(data.get("users"), dict):
+                raise ValueError("قاعدة البيانات غير صالحة")
+
             data.setdefault("schema_version", DB_SCHEMA_VERSION)
             data.setdefault("created_for", "مزاجي 2026")
-            data.setdefault("users", {})
             data.setdefault("servers", {})
             data.setdefault("logs", [])
             data.setdefault("plans", {})
             for plan_id, plan_data in DEFAULT_PLANS.items():
-                data["plans"].setdefault(plan_id, plan_data)
+                data["plans"].setdefault(plan_id, dict(plan_data))
+
+            # حساب المسؤول هو الحساب الوحيد الذي يُنشأ تلقائياً.
             if ADMIN_USERNAME not in data["users"]:
                 data["users"][ADMIN_USERNAME] = _admin_record()
             else:
                 data["users"][ADMIN_USERNAME]["is_admin"] = True
                 data["users"][ADMIN_USERNAME].setdefault("status", "approved")
+
             save_db(data)
             return data
         except Exception as e:
-            print(f"⚠️ تعذر قراءة قاعدة البيانات، سيتم إنشاء قاعدة جديدة: {e}")
+            print(f"⚠️ تعذر قراءة قاعدة البيانات الحالية، سيتم إنشاء قاعدة جديدة: {e}")
 
-    # لا يوجد db.json مرفق يتم نسخه. هذا مقصود لمنع رجوع القاعدة القديمة.
     data = _new_clean_db()
     save_db(data)
     return data

@@ -3,6 +3,13 @@
 DATA DIR:
 MAZAGI_DATA_DIR=/data
 
+مهم:
+هذه النسخة تستخدم قاعدة بيانات مستقلة داخل:
+/data/MAZAGI_FRESH_DATABASE_20260927
+
+أي db.json أو USERS أو php_files موجودة في /data من النسخ القديمة لن يتم قراءتها أو استخدامها.
+قاعدة هذه النسخة تُنشأ من الصفر عند أول تشغيل، وتحتوي على حساب المسؤول فقط، ثم تحفظ كل التعديلات بشكل دائم على Railway Volume.
+
 Variables:
 BOT_TOKEN=ضع التوكن الجديد هنا
 BOT_USERNAME=@sjsjjskbbot
