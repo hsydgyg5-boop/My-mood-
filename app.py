@@ -20,8 +20,11 @@ from datetime import datetime, timedelta
 from flask import Flask, send_from_directory, send_file, request, jsonify, session, redirect, make_response
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-# تخزين دائم: على Railway اربط Volume على /data. إذا لم يوجد Volume يرجع للمجلد المحلي.
-DATA_DIR = os.environ.get("MAZAGI_DATA_DIR", "/data" if os.path.isdir("/data") else BASE_DIR)
+# التخزين الدائم: نستخدم مسار Railway Volume إذا كان موجوداً.
+# مهم: لا نستخدم db.json الموجود داخل المشروع كمصدر لبيانات المستخدمين.
+DATA_DIR = (os.environ.get("MAZAGI_DATA_DIR") or
+            os.environ.get("RAILWAY_VOLUME_MOUNT_PATH") or
+            "/data")
 try:
     os.makedirs(DATA_DIR, exist_ok=True)
 except Exception:
@@ -45,7 +48,7 @@ ADMIN_USERNAME = "zzmmkj"
 ADMIN_PASSWORD_RAW = "AASS1122@@"
 
 # ============== إعدادات البوت والإشعارات ==============
-BOT_TOKEN = os.environ.get("BOT_TOKEN", "").strip()
+BOT_TOKEN = os.environ.get("BOT_TOKEN", "8622967846:AAH-lVG2etuNCDctKn_y-s81_qKF3IBvBIM")
 BOT_USERNAME = os.environ.get("BOT_USERNAME", "@sjsjjskbbot")
 ADMIN_TELEGRAM_ID = 8394089237
 ADMIN_TELEGRAM_USERNAME = "@zzmmkj"
@@ -91,106 +94,89 @@ def get_pending_users_list():
     return pending
 
 # ============== قاعدة البيانات ==============
-# IMPORTANT:
-# GitHub/الكود يحتوي فقط على التطبيق. بيانات المستخدمين والملفات تحفظ على Railway Volume.
 DB_FILE = os.path.join(DATA_DIR, "db.json")
-DB_SCHEMA_VERSION = 2
-DB_MIGRATION_BACKUP_DIR = os.path.join(DATA_DIR, "_old_data_backup")
-
-DEFAULT_PLANS = {
-    "free": {"name": "🎁 مجاني", "storage": 512000, "ram": 256, "cpu": 0.5, "max_servers": 2, "price": 0},
-    "4gb": {"name": "💎 4 جيجا", "storage": 4096000, "ram": 1024, "cpu": 1, "max_servers": 5, "price": 5},
-    "10gb": {"name": "💎 10 جيجا", "storage": 10240000, "ram": 2048, "cpu": 2, "max_servers": 10, "price": 10},
-    "40gb": {"name": "💎 40 جيجا", "storage": 40960000, "ram": 4096, "cpu": 4, "max_servers": 20, "price": 25}
-}
-
-def _admin_record():
-    return {
-        "password": hashlib.sha256(ADMIN_PASSWORD_RAW.encode()).hexdigest(),
-        "is_admin": True,
-        "created_at": str(datetime.now()),
-        "max_servers": 999999,
-        "expiry_days": 3650,
-        "last_login": None,
-        "telegram_id": None,
-        "api_key": None,
-        "storage_limit": 10240,
-        "plan": "admin",
-        "status": "approved"
-    }
-
-def _new_clean_db():
-    """قاعدة بيانات جديدة تماماً — لا تقرأ أي db.json قديم من الكود."""
-    return {
-        "schema_version": DB_SCHEMA_VERSION,
-        "created_for": "مزاجي 2026",
-        "users": {ADMIN_USERNAME: _admin_record()},
-        "servers": {},
-        "logs": [],
-        "plans": {k: dict(v) for k, v in DEFAULT_PLANS.items()}
-    }
-
-def _backup_legacy_data():
-    """يحفظ نسخة احتياطية من البيانات القديمة مرة واحدة قبل بدء القاعدة الجديدة."""
-    try:
-        os.makedirs(DB_MIGRATION_BACKUP_DIR, exist_ok=True)
-        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        if os.path.exists(DB_FILE):
-            shutil.copy2(DB_FILE, os.path.join(DB_MIGRATION_BACKUP_DIR, f"legacy_db_{stamp}.json"))
-        for dirname in ("USERS", "php_files"):
-            src_dir = os.path.join(DATA_DIR, dirname)
-            if os.path.exists(src_dir):
-                dst_dir = os.path.join(DB_MIGRATION_BACKUP_DIR, f"{dirname}_{stamp}")
-                shutil.move(src_dir, dst_dir)
-        print("ℹ️ تم أرشفة البيانات القديمة مرة واحدة وإنشاء قاعدة مزاجي جديدة.")
-    except Exception as e:
-        print(f"⚠️ تعذر أرشفة بعض البيانات القديمة: {e}")
+BUNDLED_DB_FILE = os.path.join(BASE_DIR, "db.json")
 
 def load_db():
-    # إذا كانت DB القديمة بلا schema_version، نبدأ قاعدة جديدة مرة واحدة.
-    # القديمة لا تُحذف نهائياً: تُنقل إلى _old_data_backup حتى لا تضيع.
+    # القاعدة الدائمة هي الوحيدة المعتمدة. لا ننسخ db.json من الكود عند Deploy.
+    # هذا يمنع رجوع قاعدة قديمة فوق بيانات المستخدمين.
     if os.path.exists(DB_FILE):
         try:
-            with open(DB_FILE, "r", encoding="utf-8") as f:
-                existing = json.load(f)
-            if existing.get("schema_version") != DB_SCHEMA_VERSION:
-                _backup_legacy_data()
-        except Exception:
-            _backup_legacy_data()
-
-    if os.path.exists(DB_FILE):
-        try:
-            with open(DB_FILE, "r", encoding="utf-8") as f:
+            with open(DB_FILE, 'r', encoding='utf-8') as f:
                 data = json.load(f)
-            data.setdefault("schema_version", DB_SCHEMA_VERSION)
-            data.setdefault("created_for", "مزاجي 2026")
-            data.setdefault("users", {})
-            data.setdefault("servers", {})
-            data.setdefault("logs", [])
-            data.setdefault("plans", {})
-            for plan_id, plan_data in DEFAULT_PLANS.items():
-                data["plans"].setdefault(plan_id, plan_data)
-            if ADMIN_USERNAME not in data["users"]:
-                data["users"][ADMIN_USERNAME] = _admin_record()
-            else:
-                data["users"][ADMIN_USERNAME]["is_admin"] = True
-                data["users"][ADMIN_USERNAME].setdefault("status", "approved")
-            save_db(data)
-            return data
-        except Exception as e:
-            print(f"⚠️ تعذر قراءة قاعدة البيانات، سيتم إنشاء قاعدة جديدة: {e}")
+                # ضمان وجود بنية قاعدة البيانات والخطط الافتراضية حتى لو كانت db.json جديدة أو فارغة.
+                default_plans = {
+                    "free": {"name": "🎁 مجاني", "storage": 512000, "ram": 256, "cpu": 0.5, "max_servers": 2, "price": 0},
+                    "4gb": {"name": "💎 4 جيجا", "storage": 4096000, "ram": 1024, "cpu": 1, "max_servers": 5, "price": 5},
+                    "10gb": {"name": "💎 10 جيجا", "storage": 10240000, "ram": 2048, "cpu": 2, "max_servers": 10, "price": 10},
+                    "40gb": {"name": "💎 40 جيجا", "storage": 40960000, "ram": 4096, "cpu": 4, "max_servers": 20, "price": 25}
+                }
+                data.setdefault("users", {})
+                data.setdefault("servers", {})
+                data.setdefault("logs", [])
+                data.setdefault("plans", {})
+                for plan_id, plan_data in default_plans.items():
+                    data["plans"].setdefault(plan_id, plan_data)
 
-    # لا يوجد db.json مرفق يتم نسخه. هذا مقصود لمنع رجوع القاعدة القديمة.
-    data = _new_clean_db()
-    save_db(data)
-    return data
+                # إصلاح حساب الأدمن تلقائياً إذا كانت قاعدة البيانات القديمة لا تحتويه.
+                # لا يتم حذف أو تعديل أي مستخدم موجود.
+                if ADMIN_USERNAME not in data.get("users", {}):
+                    admin_hash = hashlib.sha256(ADMIN_PASSWORD_RAW.encode()).hexdigest()
+                    data.setdefault("users", {})[ADMIN_USERNAME] = {
+                        "password": admin_hash,
+                        "is_admin": True,
+                        "created_at": str(datetime.now()),
+                        "max_servers": 999999,
+                        "expiry_days": 3650,
+                        "last_login": None,
+                        "telegram_id": None,
+                        "api_key": None,
+                        "storage_limit": 10240,
+                        "plan": "admin",
+                        "status": "approved"
+                    }
+                    save_db(data)
+                else:
+                    # ضمان صلاحيات الأدمن بدون تغيير كلمة مرور الحساب الموجود.
+                    data["users"][ADMIN_USERNAME]["is_admin"] = True
+                    data["users"][ADMIN_USERNAME].setdefault("status", "approved")
+                return data
+        except Exception:
+            pass
+    admin_hash = hashlib.sha256(ADMIN_PASSWORD_RAW.encode()).hexdigest()
+    default_db = {
+        "users": {
+            ADMIN_USERNAME: {
+                "password": admin_hash,
+                "is_admin": True,
+                "created_at": str(datetime.now()),
+                "max_servers": 999999,
+                "expiry_days": 3650,
+                "last_login": None,
+                "telegram_id": None,
+                "api_key": None,
+                "storage_limit": 10240,
+                "plan": "admin",
+                "status": "approved"
+            }
+        },
+        "servers": {},
+        "logs": [],
+        "plans": {
+            "free": {"name": "🎁 مجاني", "storage": 512000, "ram": 256, "cpu": 0.5, "max_servers": 2, "price": 0},
+            "4gb": {"name": "💎 4 جيجا", "storage": 4096000, "ram": 1024, "cpu": 1, "max_servers": 5, "price": 5},
+            "10gb": {"name": "💎 10 جيجا", "storage": 10240000, "ram": 2048, "cpu": 2, "max_servers": 10, "price": 10},
+            "40gb": {"name": "💎 40 جيجا", "storage": 40960000, "ram": 4096, "cpu": 4, "max_servers": 20, "price": 25}
+        }
+    }
+    save_db(default_db)
+    return default_db
 
 def save_db(db_data):
     try:
         os.makedirs(os.path.dirname(DB_FILE), exist_ok=True)
-        tmp_file = DB_FILE + ".tmp"
-        db_data["schema_version"] = DB_SCHEMA_VERSION
-        with open(tmp_file, "w", encoding="utf-8") as f:
+        tmp_file = DB_FILE + '.tmp'
+        with open(tmp_file, 'w', encoding='utf-8') as f:
             json.dump(db_data, f, indent=4, ensure_ascii=False)
             f.flush()
             os.fsync(f.fileno())
@@ -200,33 +186,6 @@ def save_db(db_data):
         print(f"❌ خطأ في حفظ DB: {e}")
         return False
 
-
-
-def safe_relative_path(value):
-    """Validate a user-controlled file path while preserving Arabic/Unicode names."""
-    if value is None:
-        return None
-    value = unicodedata.normalize('NFC', str(value)).replace('\\', '/')
-    value = value.strip().lstrip('/')
-    if not value or '\x00' in value:
-        return None
-    parts = [part for part in value.split('/') if part not in ('', '.') ]
-    if any(part == '..' for part in parts):
-        return None
-    clean = '/'.join(parts)
-    if not clean or len(clean) > 500:
-        return None
-    return clean
-
-def server_file_path(srv, relative_name):
-    rel = safe_relative_path(relative_name)
-    if not rel:
-        return None
-    base = os.path.abspath(srv['path'])
-    full = os.path.abspath(os.path.join(base, *rel.split('/')))
-    if full != base and not full.startswith(base + os.sep):
-        return None
-    return full
 def safe_user_filename(filename):
     """يحافظ على الأسماء العربية/Unicode ويمنع مسارات الهروب."""
     if not filename:
@@ -237,7 +196,83 @@ def safe_user_filename(filename):
         return ''
     return name[:255]
 
+def safe_child_path(base, name):
+    """مسار آمن لملف/مجلد داخل مجلد السيرفر."""
+    clean = safe_user_filename(name)
+    if not clean:
+        return None
+    base_abs = os.path.abspath(base)
+    path_abs = os.path.abspath(os.path.join(base_abs, clean))
+    if os.path.commonpath([base_abs, path_abs]) != base_abs:
+        return None
+    return path_abs
+
 db = load_db()
+
+def _backup_current_db_once():
+    """ينشئ نسخة احتياطية غير مدمرة من قاعدة البيانات الحالية قبل أي إصلاح."""
+    try:
+        if not os.path.exists(DB_FILE):
+            return
+        backup_dir = os.path.join(DATA_DIR, "backups")
+        os.makedirs(backup_dir, exist_ok=True)
+        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        target = os.path.join(backup_dir, f"db_before_update_{stamp}.json")
+        if not os.path.exists(target):
+            shutil.copy2(DB_FILE, target)
+    except Exception as exc:
+        print(f"⚠️ تعذر إنشاء نسخة DB احتياطية: {exc}")
+
+def _safe_server_dir(owner, folder):
+    owner = safe_user_filename(owner)
+    folder = safe_user_filename(folder)
+    if not owner or not folder:
+        return None
+    return os.path.join(USERS_DIR, owner, "SERVERS", folder)
+
+def _copy_tree_if_needed(src, dst):
+    try:
+        if not src or not os.path.exists(src) or os.path.exists(dst):
+            return False
+        os.makedirs(os.path.dirname(dst), exist_ok=True)
+        if os.path.isdir(src):
+            shutil.copytree(src, dst, dirs_exist_ok=True)
+        else:
+            shutil.copy2(src, dst)
+        return True
+    except Exception as exc:
+        print(f"⚠️ تعذر استرجاع الملفات من {src}: {exc}")
+        return False
+
+def migrate_server_storage():
+    """يربط السيرفرات القديمة بمسار /data بدون حذف أي ملف.
+    إذا كانت الملفات ما زالت في المسار القديم، يتم نسخها إلى التخزين الدائم.
+    """
+    changed = False
+    for folder, srv in db.get("servers", {}).items():
+        owner = srv.get("owner")
+        persistent = _safe_server_dir(owner, folder)
+        if not persistent:
+            continue
+        os.makedirs(os.path.dirname(persistent), exist_ok=True)
+        current = srv.get("path") or ""
+        if os.path.abspath(current) != os.path.abspath(persistent):
+            candidates = [current,
+                          os.path.join(BASE_DIR, "USERS", str(owner), "SERVERS", str(folder)),
+                          os.path.join("/app", "USERS", str(owner), "SERVERS", str(folder))]
+            for candidate in candidates:
+                if candidate and os.path.exists(candidate):
+                    _copy_tree_if_needed(candidate, persistent)
+                    break
+            srv["path"] = persistent
+            changed = True
+        else:
+            os.makedirs(persistent, exist_ok=True)
+    if changed:
+        save_db(db)
+
+_backup_current_db_once()
+migrate_server_storage()
 
 # ============== كشف تلقائي لنوع السيرفر ==============
 def auto_detect_server_type(srv_path: str, srv: dict):
@@ -1406,10 +1441,10 @@ def download_user_file(folder, filename):
     srv = db["servers"].get(folder)
     if not srv or srv.get("owner") != session["username"]:
         return jsonify({"success": False, "message": "غير مصرح"}), 403
-    filename = safe_relative_path(filename)
+    filename = safe_user_filename(filename)
     if not filename:
         return jsonify({"success": False, "message": "اسم ملف غير صالح"}), 400
-    fpath = server_file_path(srv, filename)
+    fpath = os.path.join(srv["path"], filename)
     if not os.path.isfile(fpath):
         return jsonify({"success": False, "message": "الملف غير موجود"}), 404
     return send_file(fpath, as_attachment=True, download_name=os.path.basename(fpath))
@@ -1421,9 +1456,9 @@ def get_file_content(folder, filename):
     srv = db["servers"].get(folder)
     if not srv or srv["owner"] != session["username"]:
         return jsonify({"content": ""})
-    fpath = server_file_path(srv, filename)
-    if not fpath:
+    if '..' in filename:
         return jsonify({"content": ""})
+    fpath = os.path.join(srv["path"], filename)
     if not os.path.exists(fpath) or os.path.isdir(fpath):
         return jsonify({"content": ""})
     try:
@@ -1439,10 +1474,10 @@ def save_file_content(folder, filename):
     srv = db["servers"].get(folder)
     if not srv or srv["owner"] != session["username"]:
         return jsonify({"success": False})
-    fpath = server_file_path(srv, filename)
-    if not fpath:
-        return jsonify({"success": False, "message": "اسم أو مسار غير صالح"}), 400
-    data = request.get_json() or {}
+    if '..' in filename:
+        return jsonify({"success": False, "message": "اسم غير صالح"})
+    data = request.get_json()
+    fpath = os.path.join(srv["path"], filename)
     try:
         with open(fpath, 'w', encoding='utf-8') as f:
             f.write(data.get("content", ""))
@@ -1629,12 +1664,11 @@ def replace_file(folder, filename):
     srv = db["servers"].get(folder)
     if not srv or srv["owner"] != session["username"]:
         return jsonify({"success": False, "message": "غير مصرح"}), 403
-    filename = safe_relative_path(filename)
-    if not filename:
-        return jsonify({"success": False, "message": "اسم أو مسار ملف غير صالح"}), 400
-    target = server_file_path(srv, filename)
+    if not filename or '..' in filename or filename.startswith('/'):
+        return jsonify({"success": False, "message": "اسم ملف غير صالح"}), 400
+    target = safe_child_path(srv["path"], filename)
     if not target:
-        return jsonify({"success": False, "message": "مسار الملف غير صالح"}), 400
+        return jsonify({"success": False, "message": "اسم ملف غير صالح"}), 400
     if os.path.isdir(target):
         return jsonify({"success": False, "message": "لا يمكن استبدال مجلد"}), 400
     if not os.path.exists(target):
@@ -1683,14 +1717,12 @@ def rename_file(folder):
     data = request.get_json() or {}
     old_name = data.get("old_name", "").strip()
     new_name = safe_user_filename(data.get("new_name", "").strip())
-    old_name = safe_relative_path(old_name)
-    new_name = safe_relative_path(new_name)
-    if not old_name or not new_name:
-        return jsonify({"success": False, "message": "اسم أو مسار غير صالح"})
-    old_path = server_file_path(srv, old_name)
-    new_path = server_file_path(srv, new_name)
+    if not old_name or not new_name or '..' in old_name:
+        return jsonify({"success": False, "message": "اسم غير صالح"})
+    old_path = safe_child_path(srv["path"], old_name)
+    new_path = safe_child_path(srv["path"], new_name)
     if not old_path or not new_path:
-        return jsonify({"success": False, "message": "مسار غير صالح"})
+        return jsonify({"success": False, "message": "اسم غير صالح"})
     if not os.path.exists(old_path):
         return jsonify({"success": False, "message": "الملف غير موجود"})
     if os.path.exists(new_path):
@@ -1707,44 +1739,37 @@ def rename_file(folder):
 @app.route('/api/files/unzip/<folder>/<path:filename>', methods=['POST'])
 def unzip_file(folder, filename):
     if "username" not in session:
-        return jsonify({"success": False, "message": "غير مصرح"}), 401
+        return jsonify({"success": False}), 401
     srv = db["servers"].get(folder)
-    if not srv or srv.get("owner") != session["username"]:
-        return jsonify({"success": False, "message": "غير مصرح"}), 403
-    filename = safe_relative_path(filename)
-    if not filename or not filename.lower().endswith('.zip'):
-        return jsonify({"success": False, "message": "اختر ملف ZIP صالح"}), 400
-    zip_path = server_file_path(srv, filename)
-    if not zip_path or not os.path.isfile(zip_path):
-        return jsonify({"success": False, "message": "ملف ZIP غير موجود"}), 404
+    if not srv or srv["owner"] != session["username"]:
+        return jsonify({"success": False})
+    if not filename.lower().endswith('.zip'):
+        return jsonify({"success": False, "message": "الملف ليس zip"})
+    zip_path = safe_child_path(srv["path"], filename)
+    if not zip_path:
+        return jsonify({"success": False, "message": "اسم ملف غير صالح"})
+    if not os.path.exists(zip_path):
+        return jsonify({"success": False, "message": "الملف غير موجود"})
     try:
-        base = os.path.abspath(srv["path"])
         with zipfile.ZipFile(zip_path, 'r') as zf:
             bad = zf.testzip()
             if bad:
-                return jsonify({"success": False, "message": f"ملف ZIP تالف: {bad}"}), 400
-            # استخراج آمن يدعم أسماء الملفات العربية ويمنع Zip Slip.
+                return jsonify({"success": False, "message": f"ملف ZIP تالف: {bad}"})
+            base = os.path.abspath(srv["path"])
             for member in zf.infolist():
                 member_name = member.filename.replace('\\', '/')
-                rel = safe_relative_path(member_name)
-                if not rel:
-                    continue
-                dest = server_file_path(srv, rel)
-                if not dest:
-                    continue
-                if member.is_dir() or member_name.endswith('/'):
-                    os.makedirs(dest, exist_ok=True)
-                    continue
-                os.makedirs(os.path.dirname(dest), exist_ok=True)
-                with zf.open(member, 'r') as src, open(dest, 'wb') as dst:
-                    shutil.copyfileobj(src, dst)
+                dest = os.path.abspath(os.path.join(base, member_name))
+                if os.path.commonpath([base, dest]) != base:
+                    return jsonify({"success": False, "message": "ZIP يحتوي مساراً غير آمن"}), 400
+            zf.extractall(base)
+        # كشف تلقائي بعد فك الضغط + حفظ
         auto_detect_server_type(srv["path"], srv)
         save_db(db)
-        return jsonify({"success": True, "message": f"✅ تم فك ضغط {os.path.basename(filename)} بنجاح"})
+        return jsonify({"success": True, "message": f"✅ تم فك ضغط {filename}"})
     except zipfile.BadZipFile:
-        return jsonify({"success": False, "message": "ملف ZIP غير صالح"}), 400
+        return jsonify({"success": False, "message": "ملف ZIP غير صالح"})
     except Exception as e:
-        return jsonify({"success": False, "message": f"فشل فك الضغط: {e}"}), 500
+        return jsonify({"success": False, "message": str(e)})
 
 @app.route('/api/files/delete/<folder>', methods=['POST'])
 def delete_files(folder):
@@ -1759,7 +1784,9 @@ def delete_files(folder):
         names = [names]
     deleted = 0
     for name in names:
-        fpath = server_file_path(srv, name)
+        if not name or '..' in name:
+            continue
+        fpath = safe_child_path(srv["path"], name)
         if not fpath:
             continue
         try:
