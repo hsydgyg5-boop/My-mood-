@@ -3,7 +3,7 @@ services:
     name: mazagi-host
     env: python
     buildCommand: pip install -r requirements.txt
-    startCommand: gunicorn app:app --timeout 120 --workers 2
+    startCommand: gunicorn app:app --workers 1 --threads 4 --timeout 120
     envVars:
       - key: PYTHON_VERSION
         value: 3.11.0

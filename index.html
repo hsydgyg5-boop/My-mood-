@@ -1046,9 +1046,9 @@
 
 <div id="confirmModal" class="modal"><div class="modal-content"><p id="confirmMsg"></p><div style="display:flex; gap:12px; margin-top:20px; flex-wrap:wrap;"><button class="glow-btn" id="confirmYesBtn" style="background:#ff3d5a;">تأكيد</button><button class="glow-btn" onclick="closeConfirm()">إلغاء</button></div></div></div>
 
-<div id="createFileModal" class="modal"><div class="modal-content"><input type="text" id="newFileName" placeholder="script.py" style="width:100%; margin-bottom:12px; padding:10px; border-radius:40px; border:1px solid #2d7aff; background:#010409; color:white;"><textarea id="newFileContent" rows="4" placeholder="المحتوى" style="width:100%; border-radius:16px; border:1px solid #2d7aff; background:#010409; color:white; padding:12px; font-family:monospace;"></textarea><button class="glow-btn" style="width:100%; margin-top:16px;" onclick="createFile()">إنشاء</button></div></div>
+<div id="createFileModal" class="modal"><div class="modal-content"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px"><h3 style="margin:0">ملف جديد</h3><button onclick="closeCreateFileModal()" style="background:none;border:0;color:#fff;font-size:1.2rem">✕</button></div><input type="text" id="newFileName" placeholder="script.py" style="width:100%; margin-bottom:12px; padding:10px; border-radius:40px; border:1px solid #2d7aff; background:#010409; color:white;"><textarea id="newFileContent" rows="4" placeholder="المحتوى" style="width:100%; border-radius:16px; border:1px solid #2d7aff; background:#010409; color:white; padding:12px; font-family:monospace;"></textarea><div style="display:flex;gap:10px;margin-top:16px"><button class="glow-btn" style="flex:1" onclick="createFile()">إنشاء</button><button class="glow-btn" style="flex:1;background:#333" onclick="closeCreateFileModal()">إلغاء / رجوع</button></div></div></div>
 
-<div id="createFolderModal" class="modal"><div class="modal-content"><input type="text" id="newFolderName" placeholder="اسم المجلد" style="width:100%; margin-bottom:12px; padding:10px; border-radius:40px; border:1px solid #2d7aff; background:#010409; color:white;"><button class="glow-btn" style="width:100%;" onclick="createFolder()">إنشاء مجلد</button></div></div>
+<div id="createFolderModal" class="modal"><div class="modal-content"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px"><h3 style="margin:0">مجلد جديد</h3><button onclick="closeCreateFolderModal()" style="background:none;border:0;color:#fff;font-size:1.2rem">✕</button></div><input type="text" id="newFolderName" placeholder="اسم المجلد" style="width:100%; margin-bottom:12px; padding:10px; border-radius:40px; border:1px solid #2d7aff; background:#010409; color:white;"><div style="display:flex;gap:10px;margin-top:12px"><button class="glow-btn" style="flex:1" onclick="createFolder()">إنشاء مجلد</button><button class="glow-btn" style="flex:1;background:#333" onclick="closeCreateFolderModal()">إلغاء / رجوع</button></div></div></div>
 
 <div id="toast" class="toast"></div>
 
@@ -1459,7 +1459,7 @@
             if(files.length === 0) { tbody.innerHTML = '<tr><td colspan="4">لا توجد ملفات<\/td><\/tr>'; return; }
             tbody.innerHTML = files.map(f => {
                 const jsName = JSON.stringify(f.name);
-                return `<tr><td><input type="checkbox" class="file-checkbox" value="${escapeHtml(f.name)}"><\/td><td><i class="fas ${f.is_dir ? 'fa-folder' : 'fa-file'}"></i> ${escapeHtml(f.name)}<\/td><td>${f.size}</td><td class="file-actions">${!f.is_dir ? `<button class="file-btn edit" onclick="editFile(${jsName})"><i class="fas fa-pen" style="font-size:0.7rem;"></i> تعديل</button><button class="file-btn" style="background:rgba(45,122,255,0.20);color:#63a4ff;" onclick="replaceFile(${jsName})"><i class="fas fa-repeat" style="font-size:0.7rem;"></i> استبدال الملف</button>` : ''}<button class="file-btn" style="background:rgba(120,80,220,0.25);color:#b09dff;" onclick="openRenameModal(${jsName})"><i class="fas fa-i-cursor" style="font-size:0.7rem;"></i> تغيير الاسم</button>${f.name.toLowerCase().endsWith('.zip') ? `<button class="file-btn" style="background:rgba(0,210,150,0.2);color:#00d296;" onclick="unzipFile(${jsName})"><i class="fas fa-file-archive" style="font-size:0.7rem;"></i> فك الضغط</button>` : ''}<button class="file-btn delete" onclick="deleteFile(${jsName})"><i class="fas fa-trash" style="font-size:0.7rem;"></i> حذف</button><\/td><\/tr>`;
+                return `<tr><td><input type="checkbox" class="file-checkbox" value="${escapeHtml(f.name)}"><\/td><td><i class="fas ${f.is_dir ? 'fa-folder' : 'fa-file'}"></i> ${escapeHtml(f.name)}<\/td><td>${f.size}</td><td class="file-actions">${!f.is_dir ? `<button class="file-btn edit" onclick="editFile(${jsName})"><i class="fas fa-pen" style="font-size:0.7rem;"></i> تعديل</button><button class="file-btn" style="background:rgba(45,122,255,0.20);color:#63a4ff;" onclick="replaceFile(${jsName})"><i class="fas fa-repeat" style="font-size:0.7rem;"></i> استبدال الملف</button>` : ''}<button class="file-btn" style="background:rgba(0,210,150,0.20);color:#00d296;" onclick="downloadFile(${jsName})"><i class="fas fa-download" style="font-size:0.7rem;"></i> تحميل</button><button class="file-btn" style="background:rgba(120,80,220,0.25);color:#b09dff;" onclick="openRenameModal(${jsName})"><i class="fas fa-i-cursor" style="font-size:0.7rem;"></i> تغيير الاسم</button>${f.name.toLowerCase().endsWith('.zip') ? `<button class="file-btn" style="background:rgba(0,210,150,0.2);color:#00d296;" onclick="unzipFile(${jsName})"><i class="fas fa-file-archive" style="font-size:0.7rem;"></i> فك الضغط</button>` : ''}<button class="file-btn delete" onclick="deleteFile(${jsName})"><i class="fas fa-trash" style="font-size:0.7rem;"></i> حذف</button><\/td><\/tr>`;
             }).join('');
         } catch(e) { tbody.innerHTML = '<tr><td colspan="4">خطأ<\/td><\/tr>'; }
     }
@@ -1484,6 +1484,12 @@
         document.getElementById('editorModal').classList.remove('active'); 
         currentFile=null; 
         loadFiles(); 
+    }
+
+    function downloadFile(name) {
+        if(!currentServer) return;
+        const url = `/api/files/download/${encodeURIComponent(currentServer.folder)}/${encodeURIComponent(name)}`;
+        window.location.href = url;
     }
 
     async function replaceFile(name) {
@@ -1561,16 +1567,12 @@
         const newName = document.getElementById('newFileNameInput').value.trim(); 
         if(!newName || !renameTarget) return; 
         if(newName === renameTarget) { closeRenameModal(); return; } 
-        const r = await fetch(`/api/files/rename/${currentServer.folder}`, { 
-            method:'POST', 
-            headers:{'Content-Type':'application/json'}, 
-            body:JSON.stringify({old_name: renameTarget, new_name: newName}) 
-        }); 
-        if(r.ok) { 
-            showToast(`تمت إعادة التسمية إلى ${newName}`, 'success'); 
-        } else { 
-            showToast('فشل تغيير الاسم', 'error'); 
-        } 
+        try {
+            const r = await fetch(`/api/files/rename/${currentServer.folder}`, { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({old_name: renameTarget, new_name: newName}) });
+            const d = await r.json();
+            if(d.success) showToast(d.message || `تمت إعادة التسمية إلى ${newName}`, 'success');
+            else showToast(d.message || 'فشل تغيير الاسم', 'error');
+        } catch(e) { showToast('خطأ في الاتصال', 'error'); } 
         closeRenameModal(); 
         loadFiles(); 
     }
@@ -1581,6 +1583,9 @@
         const d = await r.json(); 
         showToast(d.message, d.success?'success':'error'); 
     }
+
+    function closeCreateFileModal(){ document.getElementById('createFileModal').classList.remove('active'); }
+    function closeCreateFolderModal(){ document.getElementById('createFolderModal').classList.remove('active'); }
 
     function showCreateFileModal() { 
         document.getElementById('newFileName').value=''; 
@@ -1596,13 +1601,10 @@
     async function createFolder() { 
         const name = document.getElementById('newFolderName').value.trim(); 
         if(!name) return; 
-        await fetch(`/api/files/create/${currentServer.folder}`, { 
-            method:'POST', 
-            headers:{'Content-Type':'application/json'}, 
-            body:JSON.stringify({filename:name, content:''}) 
-        }); 
-        document.getElementById('createFolderModal').classList.remove('active'); 
-        loadFiles(); 
+        const r = await fetch(`/api/files/create/${currentServer.folder}`, { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({filename:name, content:''}) });
+        const d = await r.json();
+        if(!d.success){ showToast(d.message || 'فشل إنشاء المجلد', 'error'); return; }
+        closeCreateFolderModal(); loadFiles(); 
     }
 
     async function unzipFile(name) { 
@@ -1615,13 +1617,10 @@
         const name = document.getElementById('newFileName').value.trim(); 
         const content = document.getElementById('newFileContent').value; 
         if(!name) return; 
-        await fetch(`/api/files/create/${currentServer.folder}`, { 
-            method:'POST', 
-            headers:{'Content-Type':'application/json'}, 
-            body:JSON.stringify({filename:name,content}) 
-        }); 
-        document.getElementById('createFileModal').classList.remove('active'); 
-        loadFiles(); 
+        const r = await fetch(`/api/files/create/${currentServer.folder}`, { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({filename:name,content}) });
+        const d = await r.json();
+        if(!d.success){ showToast(d.message || 'فشل إنشاء الملف', 'error'); return; }
+        closeCreateFileModal(); loadFiles(); 
         loadStartupFiles(); 
     }
 

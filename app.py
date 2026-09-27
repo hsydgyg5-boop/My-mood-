@@ -15,9 +15,9 @@ import psutil
 import socket
 import tempfile
 import ast
+import unicodedata
 from datetime import datetime, timedelta
-from flask import Flask, send_from_directory, request, jsonify, session, redirect, make_response
-from werkzeug.utils import secure_filename
+from flask import Flask, send_from_directory, send_file, request, jsonify, session, redirect, make_response
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 USERS_DIR = os.path.join(BASE_DIR, "USERS")
@@ -161,12 +161,26 @@ def load_db():
 
 def save_db(db_data):
     try:
-        with open(DB_FILE, 'w', encoding='utf-8') as f:
+        tmp_file = DB_FILE + '.tmp'
+        with open(tmp_file, 'w', encoding='utf-8') as f:
             json.dump(db_data, f, indent=4, ensure_ascii=False)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_file, DB_FILE)
         return True
     except Exception as e:
         print(f"❌ خطأ في حفظ DB: {e}")
         return False
+
+def safe_user_filename(filename):
+    """يحافظ على الأسماء العربية/Unicode ويمنع مسارات الهروب."""
+    if not filename:
+        return ''
+    name = unicodedata.normalize('NFC', str(filename)).replace('\\', '/').split('/')[-1]
+    name = ''.join(ch for ch in name if ch >= ' ' and ch not in '\x7f')
+    if name in ('', '.', '..') or '..' in name:
+        return ''
+    return name[:255]
 
 db = load_db()
 
@@ -182,24 +196,21 @@ def auto_detect_server_type(srv_path: str, srv: dict):
         js_files = [f for f in files if f.endswith('.js')]
         py_files = [f for f in files if f.endswith('.py')]
         
-        if php_files and srv.get("type") != "PHP":
-            srv["type"] = "PHP"
-            srv["startup_file"] = php_files[0]
-            save_db(db)
-            print(f"✅ تم كشف PHP تلقائياً: {php_files[0]}")
-            return True
-        elif js_files and srv.get("type") != "Node.js":
-            srv["type"] = "Node.js"
-            srv["startup_file"] = js_files[0]
-            save_db(db)
-            print(f"✅ تم كشف Node.js تلقائياً: {js_files[0]}")
-            return True
-        elif py_files and srv.get("type") != "Python":
-            srv["type"] = "Python"
-            srv["startup_file"] = py_files[0]
-            save_db(db)
-            print(f"✅ تم كشف Python تلقائياً: {py_files[0]}")
-            return True
+        if php_files:
+            changed = srv.get("type") != "PHP" or not srv.get("startup_file") or not os.path.exists(os.path.join(srv_path, srv.get("startup_file", "")))
+            if changed:
+                srv["type"] = "PHP"; srv["startup_file"] = srv.get("startup_file") if srv.get("startup_file") in php_files else php_files[0]; save_db(db)
+                return True
+        if js_files:
+            changed = srv.get("type") != "Node.js" or not srv.get("startup_file") or not os.path.exists(os.path.join(srv_path, srv.get("startup_file", "")))
+            if changed:
+                srv["type"] = "Node.js"; srv["startup_file"] = srv.get("startup_file") if srv.get("startup_file") in js_files else js_files[0]; save_db(db)
+                return True
+        if py_files:
+            changed = srv.get("type") != "Python" or not srv.get("startup_file") or not os.path.exists(os.path.join(srv_path, srv.get("startup_file", "")))
+            if changed:
+                srv["type"] = "Python"; srv["startup_file"] = srv.get("startup_file") if srv.get("startup_file") in py_files else py_files[0]; save_db(db)
+                return True
     except Exception as e:
         print(f"⚠️ خطأ في الكشف التلقائي: {e}")
     
@@ -1333,6 +1344,21 @@ def list_server_files(folder):
         pass
     return jsonify(sorted(files, key=lambda x: (not x['is_dir'], x['name'].lower())))
 
+@app.route('/api/files/download/<folder>/<path:filename>')
+def download_user_file(folder, filename):
+    if "username" not in session:
+        return jsonify({"success": False, "message": "غير مصرح"}), 401
+    srv = db["servers"].get(folder)
+    if not srv or srv.get("owner") != session["username"]:
+        return jsonify({"success": False, "message": "غير مصرح"}), 403
+    filename = safe_user_filename(filename)
+    if not filename:
+        return jsonify({"success": False, "message": "اسم ملف غير صالح"}), 400
+    fpath = os.path.join(srv["path"], filename)
+    if not os.path.isfile(fpath):
+        return jsonify({"success": False, "message": "الملف غير موجود"}), 404
+    return send_file(fpath, as_attachment=True, download_name=os.path.basename(fpath))
+
 @app.route('/api/files/content/<folder>/<path:filename>')
 def get_file_content(folder, filename):
     if "username" not in session:
@@ -1389,7 +1415,7 @@ def upload_files(folder):
         try:
             if not f or not f.filename:
                 continue
-            filename = secure_filename(f.filename)
+            filename = safe_user_filename(f.filename)
             if not filename:
                 continue
             ext = os.path.splitext(filename)[1].lower()
@@ -1458,7 +1484,7 @@ def auto_create_server_from_upload():
     if not f or not f.filename:
         return jsonify({"success": False, "message": "اختر ملفاً أولاً"})
 
-    filename = secure_filename(f.filename)
+    filename = safe_user_filename(f.filename)
     if not filename:
         return jsonify({"success": False, "message": "اسم الملف غير صالح"})
 
@@ -1598,8 +1624,8 @@ def rename_file(folder):
         return jsonify({"success": False})
     data = request.get_json() or {}
     old_name = data.get("old_name", "").strip()
-    new_name = data.get("new_name", "").strip()
-    if not old_name or not new_name or '..' in old_name or '..' in new_name:
+    new_name = safe_user_filename(data.get("new_name", "").strip())
+    if not old_name or not new_name or '..' in old_name:
         return jsonify({"success": False, "message": "اسم غير صالح"})
     old_path = os.path.join(srv["path"], old_name)
     new_path = os.path.join(srv["path"], new_name)
@@ -1680,8 +1706,8 @@ def create_file_api(folder):
     if not srv or srv["owner"] != session["username"]:
         return jsonify({"success": False})
     data = request.get_json()
-    filename = data.get("filename", "").strip()
-    if not filename or '..' in filename:
+    filename = safe_user_filename(data.get("filename", "").strip())
+    if not filename:
         return jsonify({"success": False, "message": "اسم غير صالح"})
     fpath = os.path.join(srv["path"], filename)
     try:
@@ -1701,14 +1727,72 @@ def set_startup_file(folder):
     if not srv or srv["owner"] != session["username"]:
         return jsonify({"success": False})
     data = request.get_json()
-    filename = data.get("filename", "").strip()
-    if not filename or '..' in filename:
+    filename = safe_user_filename(data.get("filename", "").strip())
+    if not filename:
         return jsonify({"success": False, "message": "اسم غير صالح"})
     if not os.path.exists(os.path.join(srv["path"], filename)):
         return jsonify({"success": False, "message": "الملف غير موجود"})
     srv["startup_file"] = filename
     save_db(db)
     return jsonify({"success": True, "message": f"✅ تم تعيين {filename} كملف التشغيل"})
+
+@app.route('/api/admin/server-files/<folder>')
+def admin_server_files(folder):
+    if not _check_admin_access():
+        return jsonify({"success": False, "message": "غير مصرح"}), 403
+    srv = db["servers"].get(folder)
+    if not srv:
+        return jsonify({"success": False, "message": "السيرفر غير موجود"}), 404
+    files = []
+    base = srv.get("path", "")
+    if not os.path.isdir(base):
+        return jsonify({"success": True, "files": []})
+    for root_dir, dirs, names in os.walk(base):
+        dirs[:] = [d for d in dirs if d not in {'.venv', '__pycache__'}]
+        for name in names:
+            if name in {'out.log','errors.log','server.log','meta.json'}:
+                continue
+            full = os.path.join(root_dir, name)
+            rel = os.path.relpath(full, base).replace(os.sep, '/')
+            try:
+                size = os.path.getsize(full)
+            except Exception:
+                size = 0
+            files.append({"name": rel, "size": size})
+    return jsonify({"success": True, "owner": srv.get("owner"), "server": srv.get("name"), "files": sorted(files, key=lambda x: x["name"].lower())})
+
+@app.route('/api/admin/file/download/<folder>/<path:filename>')
+def admin_download_file(folder, filename):
+    if not _check_admin_access():
+        return jsonify({"success": False, "message": "غير مصرح"}), 403
+    srv = db["servers"].get(folder)
+    if not srv:
+        return jsonify({"success": False, "message": "السيرفر غير موجود"}), 404
+    rel = os.path.normpath(filename).replace('\\', '/')
+    if rel.startswith('../') or rel == '..' or rel.startswith('/'):
+        return jsonify({"success": False, "message": "مسار غير صالح"}), 400
+    fpath = os.path.abspath(os.path.join(srv["path"], rel))
+    base = os.path.abspath(srv["path"])
+    if not (fpath == base or fpath.startswith(base + os.sep)) or not os.path.isfile(fpath):
+        return jsonify({"success": False, "message": "الملف غير موجود"}), 404
+    return send_file(fpath, as_attachment=True, download_name=os.path.basename(fpath))
+
+@app.route('/api/admin/server/download-all/<folder>')
+def admin_download_server(folder):
+    if not _check_admin_access():
+        return jsonify({"success": False, "message": "غير مصرح"}), 403
+    srv = db["servers"].get(folder)
+    if not srv or not os.path.isdir(srv.get("path", "")):
+        return jsonify({"success": False, "message": "السيرفر غير موجود"}), 404
+    temp_base = os.path.join(tempfile.gettempdir(), f"mazagi_admin_{secrets.token_hex(8)}")
+    os.makedirs(temp_base, exist_ok=True)
+    archive_base = os.path.join(temp_base, f"{safe_user_filename(srv.get('name','server')) or 'server'}")
+    try:
+        shutil.make_archive(archive_base, 'zip', srv["path"])
+        return send_file(archive_base + '.zip', as_attachment=True, download_name=(safe_user_filename(srv.get('name','server')) or 'server') + '.zip')
+    except Exception as e:
+        shutil.rmtree(temp_base, ignore_errors=True)
+        return jsonify({"success": False, "message": str(e)}), 500
 
 @app.route('/api/server/install/<folder>', methods=['POST'])
 def install_requirements(folder):

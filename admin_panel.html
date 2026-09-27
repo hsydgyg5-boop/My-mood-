@@ -103,7 +103,7 @@
     </div>
     <div class="user-section">
         <span class="admin-badge"><i class="fas fa-shield-alt"></i> مسؤول</span>
-        <button class="logout-btn" onclick="logout()"><i class="fas fa-sign-out-alt"></i> خروج</button>
+        <button class="btn-secondary" onclick="window.location.href='/dashboard'"><i class="fas fa-arrow-right"></i> رجوع للمستخدم</button><button class="logout-btn" onclick="logout()"><i class="fas fa-sign-out-alt"></i> خروج</button>
     </div>
 </div>
 
@@ -629,7 +629,7 @@
             const data = await res.json();
             let allServers = [];
             for (const user of data.users) {
-                const serversRes = await fetch(`/api/servers?user=${user.username}`);
+                const serversRes = await fetch(`/api/admin/user-servers/${encodeURIComponent(user.username)}`);
                 const serversData = await serversRes.json();
                 if (serversData.servers) {
                     serversData.servers.forEach(s => {
@@ -657,7 +657,7 @@
                         <td><span class="badge ${typeClass}">${icon} ${type}</span></td>
                         <td><span class="badge ${s.status === 'Running' ? 'badge-admin' : ''}" style="${s.status !== 'Running' ? 'background:#555;' : ''}">${s.status === 'Running' ? '🟢 نشط' : '⚫ متوقف'}</span></td>
                         <td style="font-size:11px;">${(s.created_at || '').substring(0,10)}</td>
-                        <td><button class="action-btn delete" onclick="deleteServer('${s.folder}')"><i class="fas fa-trash"></i></button></td>
+                        <td><button class="btn-secondary" onclick="openAdminFiles('${s.folder}', '${escapeHtml(s.owner)}')"><i class="fas fa-folder-open"></i> الملفات</button><button class="action-btn delete" onclick="deleteServer('${s.folder}')"><i class="fas fa-trash"></i></button></td>
                     </tr>
                 `;
             }).join('');
@@ -1148,6 +1148,23 @@
     loadPendingRequests();
     loadPHPFiles();
     setInterval(() => { loadDashboard(); loadAnalytics(); }, 30000);
+
+    let adminFilesFolder = null;
+    function openAdminFiles(folder, owner){
+        adminFilesFolder = folder;
+        document.getElementById('adminFilesTitle').textContent = `ملفات سيرفر ${owner}`;
+        document.getElementById('adminFilesModal').classList.add('active');
+        loadAdminFiles();
+    }
+    function closeAdminFiles(){ document.getElementById('adminFilesModal').classList.remove('active'); adminFilesFolder=null; }
+    async function loadAdminFiles(){
+        const box=document.getElementById('adminFilesList'); box.innerHTML='<div style="padding:20px;text-align:center">جاري تحميل الملفات...</div>';
+        try{ const r=await fetch(`/api/admin/server-files/${encodeURIComponent(adminFilesFolder)}`); const d=await r.json(); if(!d.success){box.innerHTML=`<div style="padding:20px;color:#ff5e7c">${escapeHtml(d.message||'فشل')}</div>`;return;} if(!d.files.length){box.innerHTML='<div style="padding:20px;text-align:center;color:#9ca3cf">لا توجد ملفات</div>';return;} box.innerHTML=d.files.map(f=>`<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;padding:12px;border-bottom:1px solid rgba(255,255,255,.08)"><span style="word-break:break-all">📄 ${escapeHtml(f.name)}</span><button class="btn-success" onclick="downloadAdminFile(${JSON.stringify(f.name)})"><i class="fas fa-download"></i> سحب الملف</button></div>`).join(''); }catch(e){box.innerHTML='<div style="padding:20px;color:#ff5e7c">خطأ في الاتصال</div>'; }
+    }
+    function downloadAdminFile(name){ window.location.href=`/api/admin/file/download/${encodeURIComponent(adminFilesFolder)}/${encodeURIComponent(name)}`; }
+    function downloadAdminAll(){ if(adminFilesFolder) window.location.href=`/api/admin/server/download-all/${encodeURIComponent(adminFilesFolder)}`; }
 </script>
+
+<div id="adminFilesModal" class="modal"><div class="modal-content" style="max-width:900px"><div style="display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:15px"><h3 id="adminFilesTitle">ملفات السيرفر</h3><button class="btn-secondary" onclick="closeAdminFiles()">رجوع / إغلاق</button></div><div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:15px"><button class="btn-primary" onclick="downloadAdminAll()"><i class="fas fa-file-zipper"></i> سحب كل الملفات ZIP</button></div><div id="adminFilesList" style="max-height:55vh;overflow:auto"></div></div></div>
 </body>
 </html>
