@@ -13,7 +13,8 @@ from telegram.ext import (
 )
 
 # ========== إعدادات البوت ==========
-BOT_TOKEN = "8107118673:AAG6xUifqFD5qtCWZMy_D9qEmC8HOCx4DBo"
+BOT_TOKEN = os.environ.get("BOT_TOKEN", "8622967846:AAH-lVG2etuNCDctKn_y-s81_qKF3IBvBIM")
+BOT_USERNAME = os.environ.get("BOT_USERNAME", "@sjsjjskbbot")
 API_BASE_URL = os.environ.get("API_BASE_URL", "https://skkbsmdh.up.railway.app")
 
 # إيدي الأدمن على تليجرام

@@ -20,11 +20,17 @@ from datetime import datetime, timedelta
 from flask import Flask, send_from_directory, send_file, request, jsonify, session, redirect, make_response
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-USERS_DIR = os.path.join(BASE_DIR, "USERS")
+# تخزين دائم: على Railway اربط Volume على /data. إذا لم يوجد Volume يرجع للمجلد المحلي.
+DATA_DIR = os.environ.get("MAZAGI_DATA_DIR", "/data" if os.path.isdir("/data") else BASE_DIR)
+try:
+    os.makedirs(DATA_DIR, exist_ok=True)
+except Exception:
+    DATA_DIR = BASE_DIR
+USERS_DIR = os.path.join(DATA_DIR, "USERS")
 os.makedirs(USERS_DIR, exist_ok=True)
 
 # مجلد PHP
-PHP_DIR = os.path.join(BASE_DIR, "php_files")
+PHP_DIR = os.path.join(DATA_DIR, "php_files")
 os.makedirs(PHP_DIR, exist_ok=True)
 
 app = Flask(__name__, static_folder=BASE_DIR)
@@ -39,7 +45,8 @@ ADMIN_USERNAME = "zzmmkj"
 ADMIN_PASSWORD_RAW = "AASS1122@@"
 
 # ============== إعدادات البوت والإشعارات ==============
-BOT_TOKEN = "8669754436:AAG-XGfy4I_-X5FKDMb5DMDzhnowT3-wnSE"
+BOT_TOKEN = os.environ.get("BOT_TOKEN", "8622967846:AAH-lVG2etuNCDctKn_y-s81_qKF3IBvBIM")
+BOT_USERNAME = os.environ.get("BOT_USERNAME", "@sjsjjskbbot")
 ADMIN_TELEGRAM_ID = 8394089237
 ADMIN_TELEGRAM_USERNAME = "@zzmmkj"
 
@@ -84,9 +91,17 @@ def get_pending_users_list():
     return pending
 
 # ============== قاعدة البيانات ==============
-DB_FILE = os.path.join(BASE_DIR, "db.json")
+DB_FILE = os.path.join(DATA_DIR, "db.json")
+BUNDLED_DB_FILE = os.path.join(BASE_DIR, "db.json")
 
 def load_db():
+    # لا تستبدل قاعدة البيانات الموجودة على Volume عند كل Deploy.
+    # في أول تشغيل فقط، إذا كانت قاعدة البيانات الدائمة غير موجودة، ننسخ نسخة البداية.
+    if not os.path.exists(DB_FILE) and BUNDLED_DB_FILE != DB_FILE and os.path.exists(BUNDLED_DB_FILE):
+        try:
+            shutil.copy2(BUNDLED_DB_FILE, DB_FILE)
+        except Exception:
+            pass
     if os.path.exists(DB_FILE):
         try:
             with open(DB_FILE, 'r', encoding='utf-8') as f:
@@ -161,6 +176,7 @@ def load_db():
 
 def save_db(db_data):
     try:
+        os.makedirs(os.path.dirname(DB_FILE), exist_ok=True)
         tmp_file = DB_FILE + '.tmp'
         with open(tmp_file, 'w', encoding='utf-8') as f:
             json.dump(db_data, f, indent=4, ensure_ascii=False)
@@ -1637,7 +1653,7 @@ def rename_file(folder):
         os.rename(old_path, new_path)
         if srv.get("startup_file") == old_name:
             srv["startup_file"] = new_name
-            save_db(db)
+        save_db(db)
         return jsonify({"success": True, "message": f"✅ تمت إعادة التسمية إلى {new_name}"})
     except Exception as e:
         return jsonify({"success": False, "message": str(e)})
@@ -1660,8 +1676,9 @@ def unzip_file(folder, filename):
             if bad:
                 return jsonify({"success": False, "message": f"ملف ZIP تالف: {bad}"})
             zf.extractall(srv["path"])
-        # كشف تلقائي بعد فك الضغط
+        # كشف تلقائي بعد فك الضغط + حفظ
         auto_detect_server_type(srv["path"], srv)
+        save_db(db)
         return jsonify({"success": True, "message": f"✅ تم فك ضغط {filename}"})
     except zipfile.BadZipFile:
         return jsonify({"success": False, "message": "ملف ZIP غير صالح"})
@@ -1693,8 +1710,9 @@ def delete_files(folder):
         except Exception:
             pass
     if deleted > 0:
-        # كشف تلقائي بعد الحذف
+        # كشف تلقائي بعد الحذف + حفظ قاعدة البيانات
         auto_detect_server_type(srv["path"], srv)
+        save_db(db)
         return jsonify({"success": True, "message": f"🗑 تم حذف {deleted} ملف"})
     return jsonify({"success": False, "message": "فشل الحذف"})
 
@@ -1713,8 +1731,9 @@ def create_file_api(folder):
     try:
         with open(fpath, 'w', encoding='utf-8') as f:
             f.write(data.get("content", ""))
-        # كشف تلقائي بعد الإنشاء
+        # كشف تلقائي بعد الإنشاء + حفظ
         auto_detect_server_type(srv["path"], srv)
+        save_db(db)
         return jsonify({"success": True, "message": f"✅ تم إنشاء {filename}"})
     except Exception as e:
         return jsonify({"success": False, "message": str(e)})
@@ -1776,6 +1795,34 @@ def admin_download_file(folder, filename):
     if not (fpath == base or fpath.startswith(base + os.sep)) or not os.path.isfile(fpath):
         return jsonify({"success": False, "message": "الملف غير موجود"}), 404
     return send_file(fpath, as_attachment=True, download_name=os.path.basename(fpath))
+
+@app.route('/api/admin/file/delete/<folder>', methods=['POST'])
+def admin_delete_file(folder):
+    if not _check_admin_access():
+        return jsonify({"success": False, "message": "غير مصرح"}), 403
+    srv = db["servers"].get(folder)
+    if not srv:
+        return jsonify({"success": False, "message": "السيرفر غير موجود"}), 404
+    data = request.get_json() or {}
+    name = data.get("name", "")
+    if not name:
+        return jsonify({"success": False, "message": "اسم الملف مطلوب"}), 400
+    rel = os.path.normpath(name).replace('\\', '/')
+    if rel.startswith('../') or rel == '..' or rel.startswith('/'):
+        return jsonify({"success": False, "message": "مسار غير صالح"}), 400
+    fpath = os.path.abspath(os.path.join(srv["path"], rel))
+    base = os.path.abspath(srv["path"])
+    if not fpath.startswith(base + os.sep) or not os.path.exists(fpath):
+        return jsonify({"success": False, "message": "الملف غير موجود"}), 404
+    try:
+        if os.path.isdir(fpath):
+            shutil.rmtree(fpath)
+        else:
+            os.remove(fpath)
+        save_db(db)
+        return jsonify({"success": True, "message": "🗑 تم حذف الملف من السيرفر"})
+    except Exception as e:
+        return jsonify({"success": False, "message": str(e)}), 500
 
 @app.route('/api/admin/server/download-all/<folder>')
 def admin_download_server(folder):
