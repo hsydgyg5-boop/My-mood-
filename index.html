@@ -567,52 +567,15 @@
             white-space: pre-wrap;
         }
 
-        /* الملفات — تصميم بطاقات واضح للموبايل والكمبيوتر */
-        .files-table { width:100%; border-collapse:collapse; }
-        .files-table th, .files-table td { padding:12px 8px; border-bottom:1px solid rgba(45,122,255,.1); text-align:right; }
-        .files-list-wrap { width:100%; overflow:visible; }
-        .file-card {
-            display:grid;
-            grid-template-columns:minmax(0,1fr) auto;
-            gap:16px;
-            align-items:center;
-            padding:16px;
-            margin:0 0 12px;
-            border:1px solid rgba(75,126,255,.16);
-            border-radius:18px;
-            background:linear-gradient(145deg,rgba(12,20,38,.94),rgba(7,13,27,.94));
-            box-shadow:0 8px 24px rgba(0,0,0,.16);
+        /* الملفات */
+        .files-table {
+            width: 100%;
+            border-collapse: collapse;
         }
-        .file-main { min-width:0; display:flex; align-items:center; gap:12px; }
-        .file-check { flex:0 0 auto; width:18px; height:18px; accent-color:#2d7aff; }
-        .file-icon { width:42px; height:42px; flex:0 0 42px; display:grid; place-items:center; border-radius:12px; background:rgba(45,122,255,.13); color:#70b7ff; font-size:1.05rem; }
-        .file-info { min-width:0; }
-        .file-name { color:#f2f5ff; font-weight:700; overflow-wrap:anywhere; word-break:break-word; }
-        .file-meta { margin-top:4px; color:#8996b8; font-size:.76rem; }
-        .file-actions { display:flex; flex-wrap:wrap; justify-content:flex-end; gap:8px; max-width:520px; }
-        .file-btn {
-            border:1px solid rgba(110,150,255,.18); border-radius:11px; padding:9px 11px;
-            margin:0; cursor:pointer; color:#fff; font-size:.76rem; font-weight:700;
-            display:inline-flex; align-items:center; justify-content:center; gap:6px; min-height:38px;
-            transition:transform .15s ease,filter .15s ease,border-color .15s ease;
-        }
-        .file-btn:hover { transform:translateY(-1px); filter:brightness(1.12); }
-        .file-btn:active { transform:translateY(0); }
-        .file-btn.edit { background:rgba(45,122,255,.16); color:#82bcff; }
-        .file-btn.replace { background:rgba(0,188,255,.13); color:#6fe4ff; }
-        .file-btn.download { background:rgba(0,210,150,.13); color:#54e6b9; }
-        .file-btn.rename { background:rgba(145,90,255,.15); color:#c3a8ff; }
-        .file-btn.unzip { background:rgba(255,177,55,.13); color:#ffc66d; }
-        .file-btn.delete { background:rgba(255,61,90,.12); color:#ff8799; }
-        @media (max-width:760px) {
-            .files-table { display:none; }
-            .file-card { grid-template-columns:1fr; gap:12px; padding:14px; }
-            .file-actions { justify-content:stretch; max-width:none; }
-            .file-btn { flex:1 1 calc(50% - 8px); min-width:130px; }
-            .file-main { align-items:flex-start; }
-        }
-        @media (max-width:430px) {
-            .file-btn { flex-basis:100%; }
+        .files-table th, .files-table td {
+            padding: 12px 8px;
+            border-bottom: 1px solid rgba(45, 122, 255, 0.1);
+            text-align: right;
         }
         .upload-zone {
             border: 1px dashed rgba(45, 122, 255, 0.5);
@@ -664,15 +627,44 @@
             outline: none;
             font-family: monospace;
         }
+        .file-actions {
+            display:flex;
+            flex-wrap:wrap;
+            gap:7px;
+            align-items:center;
+            justify-content:flex-start;
+            min-width:330px;
+        }
         .file-btn {
-            background: rgba(45, 122, 255, 0.2);
-            border: none;
-            border-radius: 30px;
-            padding: 4px 12px;
-            margin: 0 4px;
-            cursor: pointer;
-            color: white;
-            font-size: 0.7rem;
+            display:inline-flex;
+            align-items:center;
+            justify-content:center;
+            gap:6px;
+            min-height:34px;
+            background:linear-gradient(135deg,rgba(45,122,255,.24),rgba(45,122,255,.10));
+            border:1px solid rgba(90,150,255,.28);
+            border-radius:11px;
+            padding:7px 11px;
+            margin:0;
+            cursor:pointer;
+            color:#fff;
+            font-size:.74rem;
+            font-weight:700;
+            transition:transform .15s,filter .15s,border-color .15s;
+            touch-action:manipulation;
+        }
+        .file-btn:hover { transform:translateY(-1px); filter:brightness(1.12); border-color:rgba(90,180,255,.65); }
+        .file-btn:active { transform:scale(.97); }
+        .file-btn.edit { background:linear-gradient(135deg,rgba(0,210,150,.22),rgba(0,210,150,.08)); color:#7dffd5; }
+        .file-btn.replace { background:linear-gradient(135deg,rgba(45,122,255,.25),rgba(45,122,255,.08)); color:#8fc0ff; }
+        .file-btn.rename { background:linear-gradient(135deg,rgba(145,90,255,.25),rgba(145,90,255,.08)); color:#c9b7ff; }
+        .file-btn.extract { background:linear-gradient(135deg,rgba(0,210,150,.22),rgba(0,210,150,.08)); color:#76ffd3; }
+        .file-btn.download { background:linear-gradient(135deg,rgba(0,180,255,.20),rgba(0,180,255,.07)); color:#79d8ff; }
+        .file-btn.delete { background:linear-gradient(135deg,rgba(255,70,90,.22),rgba(255,70,90,.08)); color:#ff9da9; }
+        @media(max-width:700px){
+            .file-actions{min-width:0;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:6px;}
+            .file-btn{width:100%;font-size:.68rem;padding:7px 5px;}
+            .files-table th:nth-child(1),.files-table td:nth-child(1){display:none;}
         }
 
         /* الإحصائيات */
@@ -984,7 +976,7 @@
                 <button class="glow-btn" onclick="installPackages()" style="background:#2d7aff;"><i class="fas fa-cube"></i> تثبيت المكتبات</button>
                 <button class="glow-btn" onclick="showCreateFolderModal()" style="background:#2d7aff;"><i class="fas fa-folder-plus"></i> مجلد جديد</button>
             </div>
-            <div class="files-list-wrap" id="filesList"></div>
+            <table class="files-table"><thead><tr><th></th><th>الاسم</th><th>الحجم</th><th></th></tr></thead><tbody id="filesList"></tbody></table>
         </div>
         <div id="statsPane" class="tab-pane">
             <div class="stats-details">
@@ -1486,154 +1478,206 @@
     }
 
     // ===== دوال الملفات والإعدادات =====
+    const fileUrl = (folder, name) => `/api/files/${folder}/${encodeURIComponent(name)}`;
+
+    async function apiJson(url, options={}) {
+        const r = await fetch(url, options);
+        let d = null;
+        try { d = await r.json(); } catch (_) { d = {success:false, message:'استجابة غير صالحة من الخادم'}; }
+        if (!r.ok && d && !d.message) d.message = `فشل الطلب (${r.status})`;
+        return d;
+    }
+
     async function loadFiles() {
         if(!currentServer) return;
-        const list = document.getElementById('filesList');
-        list.innerHTML = '<div style="padding:30px;text-align:center;color:#9ca3cf;">جاري تحميل الملفات...</div>';
+        const tbody = document.getElementById('filesList');
+        tbody.innerHTML = '<tr><td colspan="4">جاري تحميل الملفات...</td></tr>';
         try {
             const r = await fetch(`/api/files/list/${encodeURIComponent(currentServer.folder)}`);
-            if(!r.ok) throw new Error('files');
             const files = await r.json();
-            if(!files.length) {
-                list.innerHTML = '<div style="padding:36px;text-align:center;color:#9ca3cf;border:1px dashed rgba(75,126,255,.2);border-radius:18px;">📁 لا توجد ملفات داخل هذا السيرفر</div>';
-                return;
+            if(!Array.isArray(files) || files.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="4">لا توجد ملفات — ارفع ملفاً من الأعلى</td></tr>'; return;
             }
-            list.innerHTML = files.map(f => {
-                const jsName = JSON.stringify(f.name);
-                const icon = f.is_dir ? 'fa-folder' : (f.name.toLowerCase().endsWith('.zip') ? 'fa-file-zipper' : 'fa-file-code');
-                const safe = escapeHtml(f.name);
-                return `<div class="file-card">
-                    <div class="file-main">
-                        <input type="checkbox" class="file-checkbox file-check" value="${safe}">
-                        <div class="file-icon"><i class="fas ${icon}"></i></div>
-                        <div class="file-info"><div class="file-name">${safe}</div><div class="file-meta">${f.is_dir ? 'مجلد' : f.size}</div></div>
-                    </div>
-                    <div class="file-actions">
-                        ${!f.is_dir ? `<button class="file-btn edit" onclick="editFile(${jsName})"><i class="fas fa-pen"></i> تعديل</button>
-                        <button class="file-btn replace" onclick="replaceFile(${jsName})"><i class="fas fa-repeat"></i> تبديل</button>
-                        <button class="file-btn download" onclick="downloadFile(${jsName})"><i class="fas fa-download"></i> تنزيل</button>` : ''}
-                        <button class="file-btn rename" onclick="openRenameModal(${jsName})"><i class="fas fa-i-cursor"></i> تغيير الاسم</button>
-                        ${f.name.toLowerCase().endsWith('.zip') ? `<button class="file-btn unzip" onclick="unzipFile(${jsName})"><i class="fas fa-file-archive"></i> فك الضغط</button>` : ''}
-                        <button class="file-btn delete" onclick="deleteFile(${jsName})"><i class="fas fa-trash"></i> حذف</button>
-                    </div>
-                </div>`;
+            tbody.innerHTML = files.map(f => {
+                const name = String(f.name || '');
+                const encoded = encodeURIComponent(name);
+                const displayName = escapeHtml(name);
+                const isZip = !f.is_dir && name.toLowerCase().endsWith('.zip');
+                const buttons = f.is_dir ?
+                    `<button type="button" class="file-btn rename" data-file-action="rename" data-file-name="${escapeAttr(name)}"><i class="fas fa-i-cursor"></i> تغيير الاسم</button><button type="button" class="file-btn delete" data-file-action="delete" data-file-name="${escapeAttr(name)}"><i class="fas fa-trash"></i> حذف المجلد</button>` :
+                    `<button type="button" class="file-btn edit" data-file-action="edit" data-file-name="${escapeAttr(name)}"><i class="fas fa-pen"></i> تعديل</button>`+
+                    `<button type="button" class="file-btn replace" data-file-action="replace" data-file-name="${escapeAttr(name)}"><i class="fas fa-repeat"></i> تبديل الملف</button>`+
+                    `<button type="button" class="file-btn download" data-file-action="download" data-file-name="${escapeAttr(name)}"><i class="fas fa-download"></i> تنزيل</button>`+
+                    `<button type="button" class="file-btn rename" data-file-action="rename" data-file-name="${escapeAttr(name)}"><i class="fas fa-i-cursor"></i> تغيير الاسم</button>`+
+                    (isZip ? `<button type="button" class="file-btn extract" data-file-action="unzip" data-file-name="${escapeAttr(name)}"><i class="fas fa-file-zipper"></i> فك الملف</button>` : '')+
+                    `<button type="button" class="file-btn delete" data-file-action="delete" data-file-name="${escapeAttr(name)}"><i class="fas fa-trash"></i> حذف</button>`;
+                return `<tr><td><input type="checkbox" class="file-checkbox" value="${escapeAttr(name)}"></td><td><i class="fas ${f.is_dir ? 'fa-folder' : 'fa-file'}"></i> ${displayName}</td><td>${escapeHtml(f.size || '')}</td><td class="file-actions">${buttons}</td></tr>`;
             }).join('');
         } catch(e) {
-            list.innerHTML = '<div style="padding:30px;text-align:center;color:#ff8799;">تعذر تحميل الملفات. أعد فتح قسم الملفات.</div>';
+            tbody.innerHTML = '<tr><td colspan="4">تعذر تحميل الملفات. حاول تحديث الصفحة.</td></tr>';
+            showToast('تعذر تحميل قائمة الملفات', 'error');
         }
     }
 
-    async function editFile(name) { 
-        currentFile = name; 
-        const r = await fetch(`/api/files/content/${encodeURIComponent(currentServer.folder)}/${encodeURIComponent(name)}`); 
-        const d = await r.json(); 
-        document.getElementById('editorArea').value = d.content||''; 
-        document.getElementById('editorModal').classList.add('active'); 
+    document.addEventListener('click', async (event) => {
+        const btn = event.target.closest('[data-file-action]');
+        if(!btn || !currentServer) return;
+        const action = btn.dataset.fileAction;
+        const name = btn.dataset.fileName || '';
+        if(action === 'edit') return editFile(name);
+        if(action === 'replace') return replaceFile(name);
+        if(action === 'download') return downloadFile(name);
+        if(action === 'rename') return openRenameModal(name);
+        if(action === 'unzip') return unzipFile(name);
+        if(action === 'delete') return deleteFile(name);
+    });
+
+    async function editFile(name) {
+        currentFile = name;
+        try {
+            const r = await fetch(`/api/files/content/${encodeURIComponent(currentServer.folder)}/${encodeURIComponent(name)}`);
+            const d = await r.json();
+            if(d.content === undefined || d.content === '[ملف ثنائي]') {
+                showToast('هذا الملف غير نصي ولا يمكن تعديله من المحرر', 'error');
+                return;
+            }
+            document.getElementById('editorArea').value = d.content || '';
+            document.getElementById('editorModal').classList.add('active');
+        } catch(e) { showToast('فشل فتح الملف', 'error'); }
     }
 
-    async function saveFile() { 
-        if(!currentFile) return; 
-        const content = document.getElementById('editorArea').value; 
-        await fetch(`/api/files/save/${encodeURIComponent(currentServer.folder)}/${encodeURIComponent(currentFile)}`, { 
-            method:'POST', 
-            headers:{'Content-Type':'application/json'}, 
-            body:JSON.stringify({content}) 
-        }); 
-        showToast('تم الحفظ', 'success'); 
-        document.getElementById('editorModal').classList.remove('active'); 
-        currentFile=null; 
-        loadFiles(); 
+    async function saveFile() {
+        if(!currentFile) return;
+        try {
+            const content = document.getElementById('editorArea').value;
+            const d = await apiJson(`/api/files/save/${encodeURIComponent(currentServer.folder)}/${encodeURIComponent(currentFile)}`, {
+                method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({content})
+            });
+            if(!d.success) { showToast(d.message || 'فشل الحفظ', 'error'); return; }
+            showToast('تم حفظ الملف بنجاح', 'success');
+            document.getElementById('editorModal').classList.remove('active');
+            currentFile=null; loadFiles();
+        } catch(e) { showToast('خطأ أثناء الحفظ', 'error'); }
     }
 
     function downloadFile(name) {
         if(!currentServer) return;
-        const url = `/api/files/download/${encodeURIComponent(currentServer.folder)}/${encodeURIComponent(name)}`;
-        window.location.href = url;
+        window.location.href = `/api/files/download/${encodeURIComponent(currentServer.folder)}/${encodeURIComponent(name)}`;
     }
 
     async function replaceFile(name) {
         const input = document.createElement('input');
         input.type = 'file';
-        input.style.display = 'none';
+        input.accept = '*/*';
+        input.style.position = 'fixed'; input.style.left = '-9999px';
         document.body.appendChild(input);
         input.onchange = async () => {
             const file = input.files && input.files[0];
             if(!file) { input.remove(); return; }
-            if(!confirm(`استبدال الملف "${name}" بالملف "${file.name}"؟\nلن يتم حذف أي ملف آخر.`)) {
-                input.remove();
-                return;
-            }
-            const fd = new FormData();
-            fd.append('file', file);
+            if(!confirm(`تبديل الملف:\n${name}\n\nبالملف الجديد:\n${file.name}\n\nلن يتم حذف أي ملف آخر.`)) { input.remove(); return; }
+            const fd = new FormData(); fd.append('file', file);
             try {
-                const r = await fetch(`/api/files/replace/${currentServer.folder}/${encodeURIComponent(name)}`, { method:'POST', body:fd });
-                const d = await r.json();
-                if(d.success) {
-                    showToast(d.message || 'تم استبدال الملف بنجاح', 'success');
-                    loadFiles();
-                } else {
-                    showToast(d.message || 'فشل استبدال الملف', 'error');
-                }
-            } catch(e) {
-                showToast('خطأ في الاتصال', 'error');
-            } finally {
-                input.remove();
-            }
+                showToast('جاري تبديل الملف...', 'info');
+                const d = await apiJson(`/api/files/replace/${encodeURIComponent(currentServer.folder)}/${encodeURIComponent(name)}`, {method:'POST', body:fd});
+                if(d.success) { showToast(d.message || 'تم تبديل الملف بنجاح', 'success'); await loadFiles(); }
+                else showToast(d.message || 'فشل تبديل الملف', 'error');
+            } catch(e) { showToast('خطأ في الاتصال أثناء تبديل الملف', 'error'); }
+            finally { input.remove(); }
         };
         input.click();
     }
 
-    async function deleteFile(name) { 
-        showConfirm(`حذف ${name}؟`, async () => { 
-            await fetch(`/api/files/delete/${currentServer.folder}`, { 
-                method:'POST', 
-                headers:{'Content-Type':'application/json'}, 
-                body:JSON.stringify({names:[name]}) 
-            }); 
-            loadFiles(); 
-        }); 
+    async function deleteFile(name) {
+        showConfirm(`حذف ${name}؟`, async () => {
+            try {
+                const d = await apiJson(`/api/files/delete/${encodeURIComponent(currentServer.folder)}`, {
+                    method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({names:[name]})
+                });
+                showToast(d.message || (d.success ? 'تم الحذف' : 'فشل الحذف'), d.success ? 'success' : 'error');
+                if(d.success) await loadFiles();
+            } catch(e) { showToast('خطأ في الاتصال أثناء الحذف', 'error'); }
+        });
     }
 
-    async function uploadFiles(files) { 
-        if(!files.length) return; 
-        const fd = new FormData(); 
-        for(let f of files) fd.append('files[]',f); 
-        await fetch(`/api/files/upload/${currentServer.folder}`, { method:'POST', body:fd }); 
-        loadFiles(); 
-        showToast('تم رفع الملفات', 'success'); 
+    async function uploadFiles(files) {
+        if(!files || !files.length || !currentServer) return;
+        const fd = new FormData();
+        for(let f of files) fd.append('files[]',f);
+        try {
+            showToast('جاري رفع الملفات...', 'info');
+            const d = await apiJson(`/api/files/upload/${encodeURIComponent(currentServer.folder)}`, {method:'POST', body:fd});
+            showToast(d.message || (d.success ? 'تم رفع الملفات' : 'فشل الرفع'), d.success ? 'success' : 'error');
+            if(d.success) { await loadFiles(); await loadStartupFiles(); }
+        } catch(e) { showToast('خطأ في الاتصال أثناء الرفع', 'error'); }
     }
 
-    function handleDrop(e) { 
-        e.preventDefault(); 
-        uploadFiles(e.dataTransfer.files); 
-    }
+    function handleDrop(e) { e.preventDefault(); uploadFiles(e.dataTransfer.files); }
 
     let renameTarget = null;
-    function openRenameModal(name) { 
-        renameTarget = name; 
-        document.getElementById('currentFileName').textContent = name; 
-        document.getElementById('newFileNameInput').value = name; 
-        document.getElementById('renameModal').classList.add('active'); 
-        setTimeout(()=>document.getElementById('newFileNameInput').focus(),100); 
+    function openRenameModal(name) {
+        renameTarget = name;
+        document.getElementById('currentFileName').textContent = name;
+        document.getElementById('newFileNameInput').value = name;
+        document.getElementById('renameModal').classList.add('active');
+        setTimeout(()=>document.getElementById('newFileNameInput').focus(),100);
     }
+    function closeRenameModal() { document.getElementById('renameModal').classList.remove('active'); renameTarget = null; }
 
-    function closeRenameModal() { 
-        document.getElementById('renameModal').classList.remove('active'); 
-        renameTarget = null; 
-    }
-
-    async function confirmRename() { 
-        const newName = document.getElementById('newFileNameInput').value.trim(); 
-        if(!newName || !renameTarget) return; 
-        if(newName === renameTarget) { closeRenameModal(); return; } 
+    async function confirmRename() {
+        const newName = document.getElementById('newFileNameInput').value.trim();
+        if(!newName || !renameTarget) return;
+        if(newName === renameTarget) { closeRenameModal(); return; }
         try {
-            const r = await fetch(`/api/files/rename/${currentServer.folder}`, { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({old_name: renameTarget, new_name: newName}) });
-            const d = await r.json();
-            if(d.success) showToast(d.message || `تمت إعادة التسمية إلى ${newName}`, 'success');
+            const d = await apiJson(`/api/files/rename/${encodeURIComponent(currentServer.folder)}`, {
+                method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({old_name: renameTarget, new_name: newName})
+            });
+            if(d.success) { showToast(d.message || 'تم تغيير الاسم بنجاح', 'success'); await loadFiles(); await loadStartupFiles(); }
             else showToast(d.message || 'فشل تغيير الاسم', 'error');
-        } catch(e) { showToast('خطأ في الاتصال', 'error'); } 
-        closeRenameModal(); 
-        loadFiles(); 
+        } catch(e) { showToast('خطأ في الاتصال أثناء تغيير الاسم', 'error'); }
+        closeRenameModal();
+    }
+
+    function closeCreateFileModal(){ document.getElementById('createFileModal').classList.remove('active'); }
+    function closeCreateFolderModal(){ document.getElementById('createFolderModal').classList.remove('active'); }
+    function showCreateFileModal() { document.getElementById('newFileName').value=''; document.getElementById('newFileContent').value=''; document.getElementById('createFileModal').classList.add('active'); }
+    function showCreateFolderModal() { document.getElementById('newFolderName').value=''; document.getElementById('createFolderModal').classList.add('active'); }
+
+    async function createFolder() {
+        const name = document.getElementById('newFolderName').value.trim();
+        if(!name) { showToast('اكتب اسم المجلد', 'error'); return; }
+        const d = await apiJson(`/api/files/create/${encodeURIComponent(currentServer.folder)}`, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({filename:name, content:''})});
+        if(!d.success){ showToast(d.message || 'فشل إنشاء المجلد', 'error'); return; }
+        showToast(d.message || 'تم إنشاء المجلد', 'success'); closeCreateFolderModal(); loadFiles();
+    }
+
+    async function unzipFile(name) {
+        if(!confirm(`فك محتويات الملف:\n${name}\n\nسيتم استخراج الملفات داخل نفس السيرفر.`)) return;
+        try {
+            showToast('جاري فك الملف...', 'info');
+            const d = await apiJson(`/api/files/unzip/${encodeURIComponent(currentServer.folder)}/${encodeURIComponent(name)}`, {method:'POST'});
+            showToast(d.message || (d.success ? 'تم فك الملف' : 'فشل فك الملف'), d.success ? 'success' : 'error');
+            if(d.success) { await loadFiles(); await loadStartupFiles(); }
+        } catch(e) { showToast('خطأ أثناء فك الملف', 'error'); }
+    }
+
+    async function createFile() {
+        const name = document.getElementById('newFileName').value.trim();
+        const content = document.getElementById('newFileContent').value;
+        if(!name) { showToast('اكتب اسم الملف', 'error'); return; }
+        const d = await apiJson(`/api/files/create/${encodeURIComponent(currentServer.folder)}`, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({filename:name,content})});
+        if(!d.success){ showToast(d.message || 'فشل إنشاء الملف', 'error'); return; }
+        showToast(d.message || 'تم إنشاء الملف', 'success'); closeCreateFileModal(); loadFiles(); loadStartupFiles();
+    }
+
+    async function loadStartupFiles() {
+        if(!currentServer) return;
+        const r = await fetch(`/api/files/list/${encodeURIComponent(currentServer.folder)}`);
+        const files = await r.json();
+        const type = currentServer.type || 'Python';
+        const extensions = type === 'Node.js' ? ['.js'] : type === 'PHP' ? ['.php'] : ['.py'];
+        const startupFiles = files.filter(f=> extensions.some(ext => String(f.name).toLowerCase().endsWith(ext)) && !f.is_dir);
+        const select = document.getElementById('startupFileSelect');
+        if(select) select.innerHTML = '<option value="">-- اختر ملف التشغيل --</option>'+startupFiles.map(f=>`<option value="${escapeAttr(f.name)}" ${currentServer.startup_file===f.name?'selected':''}>${escapeHtml(f.name)}</option>`).join('');
     }
 
     async function installPackages() { 
@@ -1641,60 +1685,6 @@
         const r = await fetch(`/api/server/install/${currentServer.folder}`, { method:'POST' }); 
         const d = await r.json(); 
         showToast(d.message, d.success?'success':'error'); 
-    }
-
-    function closeCreateFileModal(){ document.getElementById('createFileModal').classList.remove('active'); }
-    function closeCreateFolderModal(){ document.getElementById('createFolderModal').classList.remove('active'); }
-
-    function showCreateFileModal() { 
-        document.getElementById('newFileName').value=''; 
-        document.getElementById('newFileContent').value=''; 
-        document.getElementById('createFileModal').classList.add('active'); 
-    }
-
-    function showCreateFolderModal() { 
-        document.getElementById('newFolderName').value=''; 
-        document.getElementById('createFolderModal').classList.add('active'); 
-    }
-
-    async function createFolder() { 
-        const name = document.getElementById('newFolderName').value.trim(); 
-        if(!name) return; 
-        const r = await fetch(`/api/files/create/${currentServer.folder}`, { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({filename:name, content:''}) });
-        const d = await r.json();
-        if(!d.success){ showToast(d.message || 'فشل إنشاء المجلد', 'error'); return; }
-        closeCreateFolderModal(); loadFiles(); 
-    }
-
-    async function unzipFile(name) { 
-        showToast('جاري فك الضغط...'); 
-        const r = await fetch(`/api/files/unzip/${encodeURIComponent(currentServer.folder)}/${encodeURIComponent(name)}`, { method:'POST' });
-        const d = await r.json().catch(()=>({success:false,message:'فشل فك الضغط'}));
-        showToast(d.message || (d.success ? 'تم فك الضغط' : 'فشل فك الضغط'), d.success ? 'success' : 'error');
-        loadFiles(); 
-    }
-
-    async function createFile() { 
-        const name = document.getElementById('newFileName').value.trim(); 
-        const content = document.getElementById('newFileContent').value; 
-        if(!name) return; 
-        const r = await fetch(`/api/files/create/${currentServer.folder}`, { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({filename:name,content}) });
-        const d = await r.json();
-        if(!d.success){ showToast(d.message || 'فشل إنشاء الملف', 'error'); return; }
-        closeCreateFileModal(); loadFiles(); 
-        loadStartupFiles(); 
-    }
-
-    async function loadStartupFiles() { 
-        if(!currentServer) return; 
-        const r = await fetch(`/api/files/list/${currentServer.folder}`); 
-        const files = await r.json(); 
-        const type = currentServer.type || 'Python';
-        // تحديد الامتدادات حسب نوع السيرفر
-        const extensions = type === 'Node.js' ? ['.js'] : type === 'PHP' ? ['.php'] : ['.py'];
-        const startupFiles = files.filter(f=> extensions.some(ext => f.name.endsWith(ext)) && !f.is_dir); 
-        const select = document.getElementById('startupFileSelect'); 
-        if(select) select.innerHTML = '<option value="">-- اختر ملف التشغيل --</option>'+startupFiles.map(f=>`<option value="${f.name}" ${currentServer.startup_file===f.name?'selected':''}>${f.name}</option>`).join(''); 
     }
 
     async function setStartupFile() { 
@@ -1735,9 +1725,10 @@
         window.location.href = '/login'; 
     }
 
-    function escapeHtml(s) { 
-        return String(s).replace(/[&<>]/g, m=>m==='&'?'&amp;':m==='<'?'&lt;':'&gt;'); 
+    function escapeHtml(s) {
+        return String(s).replace(/[&<>"']/g, m=>({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[m]));
     }
+    function escapeAttr(s) { return escapeHtml(s); }
 
     // ===== بدء التشغيل =====
     checkAuth();
