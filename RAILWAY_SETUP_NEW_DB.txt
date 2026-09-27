@@ -1,0 +1,10 @@
+إعداد Railway للنسخة الجديدة
+
+DATA DIR:
+MAZAGI_DATA_DIR=/data
+
+Variables:
+BOT_TOKEN=ضع التوكن الجديد هنا
+BOT_USERNAME=@sjsjjskbbot
+
+مهم: إذا كان التوكن ظهر في GitHub أو محادثة عامة، أنشئ توكن جديد من BotFather واستخدم الجديد فقط.

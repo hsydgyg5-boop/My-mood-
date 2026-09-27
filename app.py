@@ -45,7 +45,7 @@ ADMIN_USERNAME = "zzmmkj"
 ADMIN_PASSWORD_RAW = "AASS1122@@"
 
 # ============== إعدادات البوت والإشعارات ==============
-BOT_TOKEN = os.environ.get("BOT_TOKEN", "8622967846:AAH-lVG2etuNCDctKn_y-s81_qKF3IBvBIM")
+BOT_TOKEN = os.environ.get("BOT_TOKEN", "").strip()
 BOT_USERNAME = os.environ.get("BOT_USERNAME", "@sjsjjskbbot")
 ADMIN_TELEGRAM_ID = 8394089237
 ADMIN_TELEGRAM_USERNAME = "@zzmmkj"
@@ -91,94 +91,106 @@ def get_pending_users_list():
     return pending
 
 # ============== قاعدة البيانات ==============
+# IMPORTANT:
+# GitHub/الكود يحتوي فقط على التطبيق. بيانات المستخدمين والملفات تحفظ على Railway Volume.
 DB_FILE = os.path.join(DATA_DIR, "db.json")
-BUNDLED_DB_FILE = os.path.join(BASE_DIR, "db.json")
+DB_SCHEMA_VERSION = 2
+DB_MIGRATION_BACKUP_DIR = os.path.join(DATA_DIR, "_old_data_backup")
 
-def load_db():
-    # لا تستبدل قاعدة البيانات الموجودة على Volume عند كل Deploy.
-    # في أول تشغيل فقط، إذا كانت قاعدة البيانات الدائمة غير موجودة، ننسخ نسخة البداية.
-    if not os.path.exists(DB_FILE) and BUNDLED_DB_FILE != DB_FILE and os.path.exists(BUNDLED_DB_FILE):
-        try:
-            shutil.copy2(BUNDLED_DB_FILE, DB_FILE)
-        except Exception:
-            pass
-    if os.path.exists(DB_FILE):
-        try:
-            with open(DB_FILE, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-                # ضمان وجود بنية قاعدة البيانات والخطط الافتراضية حتى لو كانت db.json جديدة أو فارغة.
-                default_plans = {
-                    "free": {"name": "🎁 مجاني", "storage": 512000, "ram": 256, "cpu": 0.5, "max_servers": 2, "price": 0},
-                    "4gb": {"name": "💎 4 جيجا", "storage": 4096000, "ram": 1024, "cpu": 1, "max_servers": 5, "price": 5},
-                    "10gb": {"name": "💎 10 جيجا", "storage": 10240000, "ram": 2048, "cpu": 2, "max_servers": 10, "price": 10},
-                    "40gb": {"name": "💎 40 جيجا", "storage": 40960000, "ram": 4096, "cpu": 4, "max_servers": 20, "price": 25}
-                }
-                data.setdefault("users", {})
-                data.setdefault("servers", {})
-                data.setdefault("logs", [])
-                data.setdefault("plans", {})
-                for plan_id, plan_data in default_plans.items():
-                    data["plans"].setdefault(plan_id, plan_data)
+DEFAULT_PLANS = {
+    "free": {"name": "🎁 مجاني", "storage": 512000, "ram": 256, "cpu": 0.5, "max_servers": 2, "price": 0},
+    "4gb": {"name": "💎 4 جيجا", "storage": 4096000, "ram": 1024, "cpu": 1, "max_servers": 5, "price": 5},
+    "10gb": {"name": "💎 10 جيجا", "storage": 10240000, "ram": 2048, "cpu": 2, "max_servers": 10, "price": 10},
+    "40gb": {"name": "💎 40 جيجا", "storage": 40960000, "ram": 4096, "cpu": 4, "max_servers": 20, "price": 25}
+}
 
-                # إصلاح حساب الأدمن تلقائياً إذا كانت قاعدة البيانات القديمة لا تحتويه.
-                # لا يتم حذف أو تعديل أي مستخدم موجود.
-                if ADMIN_USERNAME not in data.get("users", {}):
-                    admin_hash = hashlib.sha256(ADMIN_PASSWORD_RAW.encode()).hexdigest()
-                    data.setdefault("users", {})[ADMIN_USERNAME] = {
-                        "password": admin_hash,
-                        "is_admin": True,
-                        "created_at": str(datetime.now()),
-                        "max_servers": 999999,
-                        "expiry_days": 3650,
-                        "last_login": None,
-                        "telegram_id": None,
-                        "api_key": None,
-                        "storage_limit": 10240,
-                        "plan": "admin",
-                        "status": "approved"
-                    }
-                    save_db(data)
-                else:
-                    # ضمان صلاحيات الأدمن بدون تغيير كلمة مرور الحساب الموجود.
-                    data["users"][ADMIN_USERNAME]["is_admin"] = True
-                    data["users"][ADMIN_USERNAME].setdefault("status", "approved")
-                return data
-        except Exception:
-            pass
-    admin_hash = hashlib.sha256(ADMIN_PASSWORD_RAW.encode()).hexdigest()
-    default_db = {
-        "users": {
-            ADMIN_USERNAME: {
-                "password": admin_hash,
-                "is_admin": True,
-                "created_at": str(datetime.now()),
-                "max_servers": 999999,
-                "expiry_days": 3650,
-                "last_login": None,
-                "telegram_id": None,
-                "api_key": None,
-                "storage_limit": 10240,
-                "plan": "admin",
-                "status": "approved"
-            }
-        },
+def _admin_record():
+    return {
+        "password": hashlib.sha256(ADMIN_PASSWORD_RAW.encode()).hexdigest(),
+        "is_admin": True,
+        "created_at": str(datetime.now()),
+        "max_servers": 999999,
+        "expiry_days": 3650,
+        "last_login": None,
+        "telegram_id": None,
+        "api_key": None,
+        "storage_limit": 10240,
+        "plan": "admin",
+        "status": "approved"
+    }
+
+def _new_clean_db():
+    """قاعدة بيانات جديدة تماماً — لا تقرأ أي db.json قديم من الكود."""
+    return {
+        "schema_version": DB_SCHEMA_VERSION,
+        "created_for": "مزاجي 2026",
+        "users": {ADMIN_USERNAME: _admin_record()},
         "servers": {},
         "logs": [],
-        "plans": {
-            "free": {"name": "🎁 مجاني", "storage": 512000, "ram": 256, "cpu": 0.5, "max_servers": 2, "price": 0},
-            "4gb": {"name": "💎 4 جيجا", "storage": 4096000, "ram": 1024, "cpu": 1, "max_servers": 5, "price": 5},
-            "10gb": {"name": "💎 10 جيجا", "storage": 10240000, "ram": 2048, "cpu": 2, "max_servers": 10, "price": 10},
-            "40gb": {"name": "💎 40 جيجا", "storage": 40960000, "ram": 4096, "cpu": 4, "max_servers": 20, "price": 25}
-        }
+        "plans": {k: dict(v) for k, v in DEFAULT_PLANS.items()}
     }
-    save_db(default_db)
-    return default_db
+
+def _backup_legacy_data():
+    """يحفظ نسخة احتياطية من البيانات القديمة مرة واحدة قبل بدء القاعدة الجديدة."""
+    try:
+        os.makedirs(DB_MIGRATION_BACKUP_DIR, exist_ok=True)
+        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        if os.path.exists(DB_FILE):
+            shutil.copy2(DB_FILE, os.path.join(DB_MIGRATION_BACKUP_DIR, f"legacy_db_{stamp}.json"))
+        for dirname in ("USERS", "php_files"):
+            src_dir = os.path.join(DATA_DIR, dirname)
+            if os.path.exists(src_dir):
+                dst_dir = os.path.join(DB_MIGRATION_BACKUP_DIR, f"{dirname}_{stamp}")
+                shutil.move(src_dir, dst_dir)
+        print("ℹ️ تم أرشفة البيانات القديمة مرة واحدة وإنشاء قاعدة مزاجي جديدة.")
+    except Exception as e:
+        print(f"⚠️ تعذر أرشفة بعض البيانات القديمة: {e}")
+
+def load_db():
+    # إذا كانت DB القديمة بلا schema_version، نبدأ قاعدة جديدة مرة واحدة.
+    # القديمة لا تُحذف نهائياً: تُنقل إلى _old_data_backup حتى لا تضيع.
+    if os.path.exists(DB_FILE):
+        try:
+            with open(DB_FILE, "r", encoding="utf-8") as f:
+                existing = json.load(f)
+            if existing.get("schema_version") != DB_SCHEMA_VERSION:
+                _backup_legacy_data()
+        except Exception:
+            _backup_legacy_data()
+
+    if os.path.exists(DB_FILE):
+        try:
+            with open(DB_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            data.setdefault("schema_version", DB_SCHEMA_VERSION)
+            data.setdefault("created_for", "مزاجي 2026")
+            data.setdefault("users", {})
+            data.setdefault("servers", {})
+            data.setdefault("logs", [])
+            data.setdefault("plans", {})
+            for plan_id, plan_data in DEFAULT_PLANS.items():
+                data["plans"].setdefault(plan_id, plan_data)
+            if ADMIN_USERNAME not in data["users"]:
+                data["users"][ADMIN_USERNAME] = _admin_record()
+            else:
+                data["users"][ADMIN_USERNAME]["is_admin"] = True
+                data["users"][ADMIN_USERNAME].setdefault("status", "approved")
+            save_db(data)
+            return data
+        except Exception as e:
+            print(f"⚠️ تعذر قراءة قاعدة البيانات، سيتم إنشاء قاعدة جديدة: {e}")
+
+    # لا يوجد db.json مرفق يتم نسخه. هذا مقصود لمنع رجوع القاعدة القديمة.
+    data = _new_clean_db()
+    save_db(data)
+    return data
 
 def save_db(db_data):
     try:
         os.makedirs(os.path.dirname(DB_FILE), exist_ok=True)
-        tmp_file = DB_FILE + '.tmp'
-        with open(tmp_file, 'w', encoding='utf-8') as f:
+        tmp_file = DB_FILE + ".tmp"
+        db_data["schema_version"] = DB_SCHEMA_VERSION
+        with open(tmp_file, "w", encoding="utf-8") as f:
             json.dump(db_data, f, indent=4, ensure_ascii=False)
             f.flush()
             os.fsync(f.fileno())
