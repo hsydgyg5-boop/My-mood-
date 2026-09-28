@@ -2,6 +2,7 @@ import os
 import json
 import subprocess
 import re
+from urllib.parse import quote, unquote
 import sys
 import hashlib
 import secrets
@@ -1271,6 +1272,123 @@ def ping():
     return jsonify({"status": "pong", "timestamp": str(datetime.now())})
 
 # ============== السيرفرات ==============
+
+# ============== زر فتح السيرفر: بوت تليجرام أو موقع ==============
+def find_telegram_bot_token(srv_path: str):
+    """يبحث عن توكن بوت تليجرام داخل ملفات السيرفر بدون تغيير الملفات."""
+    token_re = re.compile(r'(?<![A-Za-z0-9:_-])\d{6,12}:[A-Za-z0-9_-]{30,50}(?![A-Za-z0-9_-])')
+    skip_ext = {'.png', '.jpg', '.jpeg', '.gif', '.webp', '.zip', '.pyc', '.db', '.sqlite', '.sqlite3'}
+    try:
+        for root, dirs, files in os.walk(srv_path):
+            dirs[:] = [d for d in dirs if d not in {'.venv', 'venv', 'node_modules', '__pycache__'}]
+            for filename in files:
+                if os.path.splitext(filename)[1].lower() in skip_ext:
+                    continue
+                path = os.path.join(root, filename)
+                try:
+                    if os.path.getsize(path) > 2 * 1024 * 1024:
+                        continue
+                    with open(path, 'r', encoding='utf-8', errors='ignore') as fh:
+                        text = fh.read()
+                    match = token_re.search(text)
+                    if match:
+                        return match.group(0)
+                except Exception:
+                    continue
+    except Exception:
+        pass
+    return None
+
+def get_server_open_url(folder: str, srv: dict):
+    """إرجاع رابط فتح مناسب للسيرفر."""
+    token = find_telegram_bot_token(srv.get("path", ""))
+    if token:
+        try:
+            tg = requests.get(
+                f"https://api.telegram.org/bot{token}/getMe",
+                timeout=8
+            ).json()
+            username = (tg.get("result") or {}).get("username")
+            if username:
+                return {
+                    "kind": "telegram",
+                    "url": f"https://t.me/{username}",
+                    "label": "فتح"
+                }
+        except Exception:
+            pass
+
+    # أي سيرفر لا يحتوي توكن بوت يُعامل كموقع ويب.
+    # يتم تمرير الموقع من خلال نفس تطبيق مزاجي حتى لا نحتاج منفذاً عاماً إضافياً.
+    if srv.get("port"):
+        base = request.host_url.rstrip("/")
+        return {
+            "kind": "website",
+            "url": f"{base}/site/{quote(folder, safe='')}/",
+            "label": "فتح"
+        }
+    return None
+
+@app.route('/api/server/open/<folder>')
+def server_open(folder):
+    if "username" not in session:
+        return jsonify({"success": False, "message": "غير مصرح"}), 401
+    srv = db["servers"].get(folder)
+    if not srv or srv.get("owner") != session["username"]:
+        return jsonify({"success": False, "message": "غير مصرح"}), 403
+
+    result = get_server_open_url(folder, srv)
+    if not result:
+        return jsonify({"success": False, "message": "تعذر تحديد رابط الفتح"}), 404
+
+    return jsonify({"success": True, **result})
+
+@app.route('/site/<folder>/', defaults={'subpath': ''})
+@app.route('/site/<folder>/<path:subpath>')
+def proxy_user_site(folder, subpath):
+    """وكيل بسيط لعرض مواقع السيرفرات من خلال رابط فتح واحد."""
+    srv = db["servers"].get(unquote(folder))
+    if not srv or not srv.get("port"):
+        return "الموقع غير متاح", 404
+
+    # لا نسمح بالوصول إلى سيرفرات الآخرين عبر هذا المسار.
+    if srv.get("owner") != session.get("username"):
+        return "غير مصرح", 403
+
+    if srv.get("status") != "Running":
+        return "الموقع متوقف حالياً. شغّل السيرفر ثم اضغط فتح مرة أخرى.", 503
+
+    target_path = "/" + subpath
+    if request.query_string:
+        target_path += "?" + request.query_string.decode("utf-8", errors="ignore")
+
+    try:
+        upstream = requests.request(
+            method=request.method,
+            url=f"http://127.0.0.1:{int(srv['port'])}{target_path}",
+            headers={
+                k: v for k, v in request.headers.items()
+                if k.lower() not in {"host", "content-length"}
+            },
+            data=request.get_data(),
+            cookies=request.cookies,
+            allow_redirects=False,
+            timeout=30,
+            stream=True
+        )
+
+        excluded = {"content-encoding", "content-length", "transfer-encoding", "connection"}
+        headers = [(k, v) for k, v in upstream.headers.items()
+                   if k.lower() not in excluded]
+
+        from flask import Response
+        response = Response(upstream.iter_content(chunk_size=8192),
+                            status=upstream.status_code,
+                            headers=headers)
+        return response
+    except Exception as e:
+        return f"تعذر فتح الموقع: {e}", 502
+
 @app.route('/api/servers')
 def list_servers():
     if "username" not in session:
@@ -1306,7 +1424,9 @@ def list_servers():
                 "storage_limit": srv.get("storage_limit", 100),
                 "ram_limit": srv.get("ram_limit", 256),
                 "cpu_limit": srv.get("cpu_limit", 0.5),
-                "disk_used": disk_used_mb
+                "disk_used": disk_used_mb,
+                "can_open": bool(srv.get("port")),
+                "open_kind": "telegram" if find_telegram_bot_token(srv.get("path", "")) else "website"
             })
     user = db["users"].get(session["username"], {})
     return jsonify({

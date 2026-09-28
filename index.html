@@ -416,6 +416,7 @@
             transition: 0.2s;
             color: #cbd5ff;
         }
+        .action-btn.open { background:rgba(0,210,150,.15); color:#54e6b9; }
 
         .action-btn i {
             font-size: 0.8rem;
@@ -1350,6 +1351,7 @@
                             <button class="action-btn stop" data-action="stop" data-folder="${s.folder}"><i class="fas fa-stop"></i> إيقاف</button>
                         </div>
                         <div class="action-group">
+                            <button class="action-btn open" data-action="open" data-folder="${s.folder}"><i class="fas fa-external-link-alt"></i> فتح</button>
                             <button class="action-btn delete" data-action="delete" data-folder="${s.folder}"><i class="fas fa-trash"></i> حذف</button>
                             <button class="action-btn detail" data-action="detail" data-folder="${s.folder}"><i class="fas fa-chevron-left"></i> تفاصيل</button>
                         </div>
@@ -1368,6 +1370,8 @@
                         const folder = btn.dataset.folder;
                         if(action === 'detail') {
                             openServer({ folder: s.folder, title: s.title, port: s.port, status: s.status, storage_limit: s.storage_limit, ram_limit: s.ram_limit, plan: s.plan, startup_file: s.startup_file, type: s.type });
+                        } else if(action === 'open') {
+                            openServerLink(folder);
                         } else {
                             performAction(folder, action);
                         }
@@ -1379,6 +1383,21 @@
             console.error('loadServers error:', e);
             const grid = document.getElementById('serversGrid');
             if(grid) grid.innerHTML = '<div style="text-align:center; padding:60px; color:#ff5e7c;"><i class="fas fa-exclamation-triangle"></i> فشل تحميل الخوادم، حاول تحديث الصفحة</div>';
+        }
+    }
+
+    async function openServerLink(folder) {
+        try {
+            showToast('جاري تجهيز رابط الفتح...');
+            const r = await fetch(`/api/server/open/${encodeURIComponent(folder)}`);
+            const d = await r.json();
+            if (!r.ok || !d.success || !d.url) {
+                throw new Error(d.message || 'تعذر إنشاء رابط الفتح');
+            }
+            window.open(d.url, '_blank', 'noopener,noreferrer');
+            showToast(d.kind === 'telegram' ? 'تم فتح البوت على تيليجرام' : 'تم فتح الموقع', 'success');
+        } catch (e) {
+            showToast(e.message || 'تعذر فتح السيرفر', 'error');
         }
     }
 
