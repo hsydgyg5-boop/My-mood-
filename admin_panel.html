@@ -559,28 +559,27 @@
     // ===== دوال تحميل البيانات =====
     async function loadDashboard() {
         try {
-            const res = await fetch('/api/admin/users');
-            const data = await res.json();
+            const [usersRes, serversRes] = await Promise.all([
+                fetch('/api/admin/users'),
+                fetch('/api/admin/servers')
+            ]);
+            const data = await usersRes.json();
+            const serversData = await serversRes.json();
             if (data.success) {
                 document.getElementById('totalUsers').innerText = data.users.length;
-                let totalServers = 0, activeServers = 0, totalDisk = 0;
-                for (const user of data.users) {
-                    const userServers = await fetch(`/api/servers?user=${user.username}`).then(r => r.json());
-                    if (userServers.servers) {
-                        totalServers += userServers.servers.length;
-                        activeServers += userServers.servers.filter(s => s.status === 'Running').length;
-                        totalDisk += userServers.stats?.disk_total || 0;
-                    }
-                }
-                document.getElementById('totalServers').innerText = totalServers;
+                const servers = serversData.servers || [];
+                const activeServers = servers.filter(s => s.status === 'Running').length;
+                const totalDisk = servers.reduce((sum, s) => sum + (Number(s.disk_used) || 0), 0);
+                document.getElementById('totalServers').innerText = servers.length;
                 document.getElementById('activeServers').innerText = activeServers;
-                document.getElementById('totalDisk').innerText = (totalDisk / 1024).toFixed(1) + ' GB';
+                document.getElementById('totalDisk').innerText = totalDisk.toFixed(1) + ' MB';
                 document.getElementById('lastUpdate').innerText = new Date().toLocaleTimeString('ar-SA');
             }
         } catch (e) { console.log(e); }
     }
 
-    async function loadUsers() {
+
+async function loadUsers() {
         try {
             const res = await fetch('/api/admin/users');
             const data = await res.json();
@@ -628,55 +627,43 @@
         const tbody = document.getElementById('serversList');
         tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;">جاري التحميل...</td></tr>';
         try {
-            const res = await fetch('/api/admin/users');
+            const res = await fetch('/api/admin/servers');
             const data = await res.json();
-            let allServers = [];
-            for (const user of data.users) {
-                const serversRes = await fetch(`/api/admin/user-servers/${encodeURIComponent(user.username)}`);
-                const serversData = await serversRes.json();
-                if (serversData.servers) {
-                    serversData.servers.forEach(s => {
-                        allServers.push({ ...s, owner: user.username });
-                    });
-                }
-            }
-            if (allServers.length === 0) {
+            const allServers = data.servers || [];
+            if (!allServers.length) {
                 tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;">لا توجد سيرفرات</td></tr>';
                 return;
             }
-            
-            // تعريف أيقونات وأنواع السيرفرات بشكل صحيح
-            const typeIcons = { 'Python': '🐍', 'PHP': '🐘', 'Node.js': '🟨' };
-            const typeColors = { 'Python': 'badge-python', 'PHP': 'badge-php', 'Node.js': 'badge-node' };
-            
+            const typeIcons = { 'Python': '🐍', 'PHP': '🐘', 'Node.js': '🟨', 'Static': '🌐' };
+            const typeColors = { 'Python': 'badge-python', 'PHP': 'badge-php', 'Node.js': 'badge-node', 'Static': 'badge-admin' };
             tbody.innerHTML = allServers.map(s => {
                 const type = s.type || 'Python';
                 const icon = typeIcons[type] || '📦';
                 const typeClass = typeColors[type] || 'badge-python';
                 return `
-                    <tr data-server-type="${type}">
+                    <tr data-server-type="${escapeHtml(type)}">
                         <td>${escapeHtml(s.title)}</td>
                         <td>${escapeHtml(s.owner)}</td>
-                        <td><span class="badge ${typeClass}">${icon} ${type}</span></td>
+                        <td><span class="badge ${typeClass}">${icon} ${escapeHtml(type)}</span></td>
                         <td><span class="badge ${s.status === 'Running' ? 'badge-admin' : ''}" style="${s.status !== 'Running' ? 'background:#555;' : ''}">${s.status === 'Running' ? '🟢 نشط' : '⚫ متوقف'}</span></td>
                         <td style="font-size:11px;">${(s.created_at || '').substring(0,10)}</td>
-                        <td><button class="btn-secondary" onclick="openAdminFiles('${s.folder}', '${escapeHtml(s.owner)}')"><i class="fas fa-folder-open"></i> الملفات</button><button class="action-btn delete" onclick="deleteServer('${s.folder}')"><i class="fas fa-trash"></i></button></td>
+                        <td>
+                            <button class="btn-secondary" onclick="openAdminFiles(${JSON.stringify(s.folder)}, ${JSON.stringify(s.owner)})"><i class="fas fa-folder-open"></i> الملفات</button>
+                            <button class="action-btn delete" onclick="deleteServer(${JSON.stringify(s.folder)})"><i class="fas fa-trash"></i></button>
+                        </td>
                     </tr>
                 `;
             }).join('');
-            
-            // تطبيق الفلتر الحالي
             filterAdminServers(adminServerFilter);
-            
             document.getElementById('serverSearch').oninput = function() {
                 const q = this.value.toLowerCase();
                 tbody.querySelectorAll('tr').forEach(r => {
-                    if (r.dataset.serverType) {
-                        r.style.display = r.textContent.toLowerCase().includes(q) ? '' : 'none';
-                    }
+                    if (r.dataset.serverType) r.style.display = r.textContent.toLowerCase().includes(q) ? '' : 'none';
                 });
             };
-        } catch(e) { tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;">خطأ في التحميل</td></tr>'; }
+        } catch(e) {
+            tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;">خطأ في تحميل السيرفرات</td></tr>';
+        }
     }
 
     async function loadPendingRequests() {
@@ -1167,8 +1154,19 @@
     function downloadAdminFile(name){ window.location.href=`/api/admin/file/download/${encodeURIComponent(adminFilesFolder)}/${encodeURIComponent(name)}`; }
     async function deleteAdminFile(name){ if(!confirm(`حذف الملف ${name} نهائياً؟`)) return; try { const r=await fetch(`/api/admin/file/delete/${encodeURIComponent(adminFilesFolder)}`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({name})}); const d=await r.json(); alert(d.message||"تم"); if(d.success) loadAdminFiles(); } catch(e){ alert("خطأ في الاتصال"); } }
     function downloadAdminAll(){ if(adminFilesFolder) window.location.href=`/api/admin/server/download-all/${encodeURIComponent(adminFilesFolder)}`; }
+    async function deleteAdminAllFiles(){
+        if(!adminFilesFolder) return;
+        if(!confirm('⚠️ سيتم حذف جميع ملفات هذا السيرفر نهائياً، ولن يتم حذف حساب المستخدم أو السيرفر نفسه. هل أنت متأكد؟')) return;
+        try{
+            const r=await fetch(`/api/admin/server/delete-all/${encodeURIComponent(adminFilesFolder)}`,{method:'POST'});
+            const d=await r.json();
+            if(d.success){ showToast(d.message||'تم حذف جميع الملفات','success'); loadAdminFiles(); loadAllServers(); }
+            else showToast(d.message||'فشل الحذف','error');
+        }catch(e){ showToast('خطأ في الاتصال','error'); }
+    }
 </script>
 
-<div id="adminFilesModal" class="modal"><div class="modal-content" style="max-width:900px"><div style="display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:15px"><h3 id="adminFilesTitle">ملفات السيرفر</h3><button class="btn-secondary" onclick="closeAdminFiles()">رجوع / إغلاق</button></div><div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:15px"><button class="btn-primary" onclick="downloadAdminAll()"><i class="fas fa-file-zipper"></i> سحب كل الملفات ZIP</button></div><div id="adminFilesList" style="max-height:55vh;overflow:auto"></div></div></div>
+<div id="adminFilesModal" class="modal"><div class="modal-content" style="max-width:900px"><div style="display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:15px"><h3 id="adminFilesTitle">ملفات السيرفر</h3><button class="btn-secondary" onclick="closeAdminFiles()">رجوع / إغلاق</button></div><div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:15px"><button class="btn-primary" onclick="downloadAdminAll()"><i class="fas fa-file-zipper"></i> سحب كل الملفات ZIP</button>
+<button class="btn-danger" onclick="deleteAdminAllFiles()"><i class="fas fa-trash"></i> حذف جميع ملفات السيرفر</button></div><div id="adminFilesList" style="max-height:55vh;overflow:auto"></div></div></div>
 </body>
 </html>

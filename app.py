@@ -327,7 +327,14 @@ def auto_detect_server_type(srv_path: str, srv: dict):
         php_files = [f for f in files if f.endswith('.php')]
         js_files = [f for f in files if f.endswith('.js')]
         py_files = [f for f in files if f.endswith('.py')]
-        
+        html_files = [f for f in files if f.lower() in {"index.html", "index.htm"}]
+
+        if html_files and not php_files and not js_files and not py_files:
+            changed = srv.get("type") != "Static" or srv.get("startup_file") not in html_files
+            if changed:
+                srv["type"] = "Static"; srv["startup_file"] = html_files[0]; srv["web_mode"] = True; save_db(db)
+                return True
+
         if php_files:
             changed = srv.get("type") != "PHP" or not srv.get("startup_file") or not os.path.exists(os.path.join(srv_path, srv.get("startup_file", "")))
             if changed:
@@ -349,6 +356,141 @@ def auto_detect_server_type(srv_path: str, srv: dict):
     return False
 
 # ============== تصحيح تلقائي لأنواع السيرفرات ==============
+
+# ============== كشف نوع المشروع وتشغيل المواقع بشكل صحيح ==============
+def detect_project_type(srv_path: str):
+    """يكشف نوع المشروع من محتوياته، بما في ذلك المواقع الثابتة."""
+    try:
+        names = {n.lower() for n in os.listdir(srv_path)}
+    except Exception:
+        return "Python"
+    if "package.json" in names:
+        return "Node.js"
+    if any(n.endswith(".php") for n in names):
+        return "PHP"
+    if any(n.endswith(".py") for n in names):
+        return "Python"
+    if "index.html" in names or "index.htm" in names:
+        return "Static"
+    return "Python"
+
+
+def detect_python_web_entry(srv_path: str, preferred_file: str = ""):
+    """يحاول تحديد Flask/FastAPI entrypoint. يعيد (kind, module, app_name)."""
+    candidates = []
+    if preferred_file and preferred_file.endswith(".py"):
+        candidates.append(preferred_file)
+    try:
+        candidates += [n for n in os.listdir(srv_path) if n.endswith(".py") and n not in candidates]
+    except Exception:
+        pass
+    for rel in candidates:
+        full = os.path.join(srv_path, rel)
+        try:
+            source = open(full, "r", encoding="utf-8", errors="ignore").read()
+            tree = ast.parse(source)
+        except Exception:
+            continue
+        kind = None
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                if any(a.name == "flask" for a in node.names):
+                    kind = "Flask"
+                if any(a.name == "fastapi" for a in node.names):
+                    kind = "FastAPI"
+            elif isinstance(node, ast.ImportFrom):
+                if node.module == "flask":
+                    kind = "Flask"
+                if node.module == "fastapi":
+                    kind = "FastAPI"
+        if not kind:
+            continue
+        app_name = None
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Assign):
+                for target in node.targets:
+                    if isinstance(target, ast.Name) and target.id in {"app", "application", "api"}:
+                        app_name = target.id
+                        break
+                if app_name:
+                    break
+        if app_name:
+            module = os.path.splitext(rel.replace(os.sep, "/"))[0].replace("/", ".")
+            return kind, module, app_name
+    return None
+
+
+def is_web_server(srv):
+    if srv.get("type") in {"Static", "PHP"}:
+        return True
+    path = srv.get("path", "")
+    if srv.get("type") == "Python":
+        return bool(detect_python_web_entry(path, srv.get("startup_file", "")))
+    if srv.get("type") == "Node.js":
+        try:
+            pkg = os.path.join(path, "package.json")
+            if os.path.exists(pkg):
+                data = json.load(open(pkg, "r", encoding="utf-8"))
+                deps = {str(k).lower() for k in (data.get("dependencies") or {})}
+                deps |= {str(k).lower() for k in (data.get("devDependencies") or {})}
+                if {"express", "fastify", "koa", "hapi", "next"} & deps:
+                    return True
+                start = str((data.get("scripts") or {}).get("start", "")).lower()
+                if any(x in start for x in ["next start", "node server", "node app", "node index"]):
+                    return True
+        except Exception:
+            pass
+    return bool(srv.get("web_mode", False))
+
+
+def port_is_ready(port, timeout=1.5):
+    try:
+        r = requests.get(f"http://127.0.0.1:{int(port)}/", timeout=timeout, allow_redirects=False)
+        return True, r.status_code
+    except Exception:
+        return False, None
+
+
+def process_is_alive(pid):
+    try:
+        p = psutil.Process(int(pid))
+        return p.is_running() and p.status() != psutil.STATUS_ZOMBIE
+    except Exception:
+        return False
+
+
+def wait_for_web_start(proc, port, seconds=12):
+    deadline = time.time() + seconds
+    while time.time() < deadline:
+        if not process_is_alive(proc.pid):
+            return False, "انتهى البرنامج قبل فتح الموقع"
+        ready, code = port_is_ready(port)
+        if ready:
+            return True, f"الموقع استجاب HTTP {code}"
+        time.sleep(0.5)
+    return False, "السيرفر يعمل لكن لم يستجب على المنفذ المحدد خلال المهلة"
+
+
+def ensure_web_python_runner(python_bin, srv_path, log_file, kind):
+    """يثبت مشغلات الويب داخل بيئة السيرفر فقط عند الحاجة."""
+    package = "gunicorn" if kind == "Flask" else "gunicorn uvicorn"
+    try:
+        test = subprocess.run(
+            [python_bin, "-c", "import gunicorn; print('ok')"],
+            cwd=srv_path, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            timeout=15
+        )
+        if test.returncode != 0:
+            subprocess.run(
+                [python_bin, "-m", "pip", "install", "--disable-pip-version-check"] + package.split(),
+                cwd=srv_path, stdout=log_file or subprocess.DEVNULL,
+                stderr=subprocess.STDOUT, timeout=300, check=False
+            )
+    except Exception as e:
+        if log_file:
+            log_file.write(f"\n⚠️ تعذر تجهيز مشغل الويب: {e}\n")
+            log_file.flush()
+
 def fix_server_types():
     """تصحيح تلقائي للسيرفرات اللي نوعها غلط"""
     updated = False
@@ -438,6 +580,12 @@ def detect_main_file(srv_path: str, server_type: str) -> str:
                 return candidate
         php_files = [f for f in os.listdir(srv_path) if f.endswith('.php')]
         return php_files[0] if php_files else ""
+    elif server_type == "Static":
+        for candidate in ["index.html", "index.htm"]:
+            if os.path.exists(os.path.join(srv_path, candidate)):
+                return candidate
+        html_files = [f for f in os.listdir(srv_path) if f.lower().endswith((".html", ".htm"))]
+        return html_files[0] if html_files else ""
     else:
         for candidate in ["main.py", "bot.py", "app.py", "index.py", "run.py", "start.py"]:
             if os.path.exists(os.path.join(srv_path, candidate)):
@@ -619,39 +767,25 @@ def start_server_process(folder):
     if not srv:
         return False, "السيرفر غير موجود"
 
-    # كشف تلقائي قبل التشغيل
     auto_detect_server_type(srv["path"], srv)
-
     server_type = srv.get("type", "Python")
-    main_file = srv.get("startup_file", "")
+    main_file = srv.get("startup_file", "") or detect_main_file(srv["path"], server_type)
 
-    if not main_file:
-        main_file = detect_main_file(srv["path"], server_type)
-        if main_file:
-            srv["startup_file"] = main_file
-            save_db(db)
-        else:
-            if server_type == "Python":
-                return False, "لا يوجد ملف تشغيل Python (.py)"
-            elif server_type == "PHP":
-                return False, "لا يوجد ملف تشغيل PHP (.php)"
-            else:
-                return False, "لا يوجد ملف تشغيل Node.js (.js)"
+    if not main_file and server_type != "Static":
+        return False, f"لا يوجد ملف تشغيل {server_type}"
 
-    file_path = os.path.join(srv["path"], main_file)
-    if not os.path.exists(file_path):
-        return False, f"الملف '{main_file}' غير موجود"
-
+    if main_file:
+        srv["startup_file"] = main_file
     port = srv.get("port") or get_assigned_port()
     srv["port"] = port
-    save_db(db)
 
     log_path = os.path.join(srv["path"], "out.log")
     error_path = os.path.join(srv["path"], "errors.log")
-    log_file = open(log_path, "a", encoding='utf-8')
+    os.makedirs(srv["path"], exist_ok=True)
+    log_file = open(log_path, "a", encoding="utf-8")
     log_file.write(
-        f"\n{'='*50}\n🚀 بدء التشغيل - {datetime.now()}\n"
-        f"📁 {main_file}\n🔌 المنفذ: {port}\n🏷 النوع: {server_type}\n{'='*50}\n\n"
+        f"\n{'='*60}\n🚀 بدء التشغيل - {datetime.now()}\n"
+        f"📁 {main_file or '-'}\n🔌 المنفذ: {port}\n🏷 النوع: {server_type}\n{'='*60}\n\n"
     )
     log_file.flush()
 
@@ -659,67 +793,119 @@ def start_server_process(folder):
         env = os.environ.copy()
         env["PORT"] = str(port)
         env["SERVER_PORT"] = str(port)
-        
-        if server_type == "Node.js":
-            cmd = ["node", main_file]
+        env["HOST"] = "0.0.0.0"
+
+        web_mode = is_web_server(srv)
+        srv["web_mode"] = web_mode
+
+        if server_type == "Static":
+            cmd = [sys.executable, "-m", "http.server", str(port), "--bind", "0.0.0.0"]
         elif server_type == "PHP":
+            if shutil.which("php") is None:
+                log_file.write("❌ PHP غير مثبت على بيئة الاستضافة.\n")
+                log_file.close()
+                srv["status"] = "Stopped"
+                save_db(db)
+                return False, "PHP غير مثبت على الاستضافة"
+            auto_install_deps(srv["path"], "PHP", log_file)
             cmd = ["php", "-S", f"0.0.0.0:{port}", "-t", srv["path"]]
+        elif server_type == "Node.js":
+            if shutil.which("node") is None:
+                log_file.write("❌ Node.js غير مثبت على بيئة الاستضافة.\n")
+                log_file.close()
+                srv["status"] = "Stopped"
+                save_db(db)
+                return False, "Node.js غير مثبت على الاستضافة"
+            # تثبيت الاعتمادات تلقائياً عند الحاجة.
+            auto_install_deps(srv["path"], "Node.js", log_file)
+            # احترام package.json عندما يكون موجوداً.
+            pkg = os.path.join(srv["path"], "package.json")
+            if os.path.exists(pkg):
+                try:
+                    pdata = json.load(open(pkg, "r", encoding="utf-8"))
+                    start_cmd = str((pdata.get("scripts") or {}).get("start", "")).strip()
+                except Exception:
+                    start_cmd = ""
+            else:
+                start_cmd = ""
+            if start_cmd:
+                cmd = ["sh", "-lc", start_cmd]
+            else:
+                cmd = ["node", main_file]
         else:
-            # قبل تشغيل Python: إنشاء البيئة الخاصة وتثبيت المكتبات تلقائياً.
             with open(log_path, "a", encoding="utf-8") as dep_log:
                 python_bin = ensure_python_environment(srv["path"], dep_log)
-            cmd = [python_bin, "-u", main_file]
-            
+            entry = detect_python_web_entry(srv["path"], main_file)
+            if entry:
+                kind, module, app_name = entry
+                ensure_web_python_runner(python_bin, srv["path"], log_file, kind)
+                if kind == "FastAPI":
+                    cmd = [python_bin, "-m", "gunicorn", "--bind", f"0.0.0.0:{port}",
+                           "--workers", "1", "--timeout", "120",
+                           "-k", "uvicorn.workers.UvicornWorker", f"{module}:{app_name}"]
+                else:
+                    cmd = [python_bin, "-m", "gunicorn", "--bind", f"0.0.0.0:{port}",
+                           "--workers", "1", "--timeout", "120", f"{module}:{app_name}"]
+                srv["web_mode"] = True
+            else:
+                cmd = [python_bin, "-u", main_file]
+
+        log_file.write("▶️ الأمر: " + " ".join(cmd) + "\n")
+        log_file.flush()
         proc = subprocess.Popen(
             cmd,
             cwd=srv["path"],
             stdout=log_file,
-            stderr=open(error_path, "a", encoding='utf-8'),
+            stderr=subprocess.STDOUT,
             env=env,
-            preexec_fn=os.setsid if hasattr(os, 'setsid') else None
+            preexec_fn=os.setsid if hasattr(os, "setsid") else None
         )
-        srv["status"] = "Running"
         srv["pid"] = proc.pid
         srv["start_time"] = time.time()
+        srv["status"] = "Starting"
         save_db(db)
-        return True, "✅ تم التشغيل"
-    except FileNotFoundError:
-        err = f"❌ المشغّل غير موجود: {'node' if server_type == 'Node.js' else 'php' if server_type == 'PHP' else 'python'}"
-        log_file.write(err + "\n")
+
+        if srv.get("web_mode"):
+            ready, message = wait_for_web_start(proc, port, seconds=15)
+            if not ready:
+                srv["status"] = "Stopped"
+                srv["pid"] = None
+                save_db(db)
+                log_file.write(f"\n❌ {message}\n")
+                log_file.flush()
+                try:
+                    proc.terminate()
+                except Exception:
+                    pass
+                log_file.close()
+                return False, f"❌ لم يبدأ الموقع فعلياً: {message}"
+        else:
+            time.sleep(1.2)
+            if not process_is_alive(proc.pid):
+                srv["status"] = "Stopped"
+                srv["pid"] = None
+                save_db(db)
+                log_file.close()
+                return False, "❌ البرنامج توقف مباشرة. افتح السجل لمعرفة الخطأ."
+        srv["status"] = "Running"
+        save_db(db)
+        return True, "✅ تم التشغيل والتحقق من أن السيرفر يعمل فعلياً"
+    except FileNotFoundError as e:
+        srv["status"] = "Stopped"
+        srv["pid"] = None
+        save_db(db)
+        log_file.write(f"\n❌ المشغل غير موجود: {e}\n")
         log_file.close()
-        return False, err
+        return False, f"❌ المشغل غير موجود: {e}"
     except Exception as e:
+        srv["status"] = "Stopped"
+        srv["pid"] = None
+        save_db(db)
         log_file.write(f"\n❌ خطأ: {e}\n")
         log_file.close()
         return False, str(e)
 
-def stop_server_process(folder):
-    srv = db["servers"].get(folder)
-    if not srv:
-        return
-    if srv.get("pid"):
-        try:
-            p = psutil.Process(srv["pid"])
-            if hasattr(os, 'killpg'):
-                try:
-                    os.killpg(os.getpgid(p.pid), signal.SIGTERM)
-                except Exception:
-                    pass
-            for child in p.children(recursive=True):
-                child.kill()
-            p.kill()
-        except Exception:
-            pass
-    srv["status"] = "Stopped"
-    srv["pid"] = None
-    save_db(db)
 
-def restart_server(folder):
-    stop_server_process(folder)
-    time.sleep(2)
-    start_server_process(folder)
-
-# ============== مراقبة العمليات ==============
 def process_monitor():
     while True:
         try:
@@ -1459,7 +1645,7 @@ def add_server():
         return jsonify({"success": False, "message": "الرجاء إدخال اسم للسيرفر"})
     
     server_type = data.get("server_type", "Python")
-    if server_type not in ("Python", "Node.js", "PHP"):
+    if server_type not in ("Python", "Node.js", "PHP", "Static"):
         server_type = "Python"
     
     plan_id = user.get("plan", "free")
@@ -1493,7 +1679,8 @@ def server_action(folder, action):
     if "username" not in session:
         return jsonify({"success": False}), 401
     srv = db["servers"].get(folder)
-    if not srv or srv["owner"] != session["username"]:
+    is_admin_actor = _check_admin_access()
+    if not srv or (srv.get("owner") != session["username"] and not is_admin_actor):
         return jsonify({"success": False, "message": "غير مصرح"})
     if action == "start":
         if srv.get("status") == "Running":
@@ -1721,6 +1908,38 @@ def _auto_install_after_upload(srv_path: str, server_type: str, log_path: str):
 
 
 @app.route('/api/server/auto-upload', methods=['POST'])
+def safe_extract_zip(zip_path, destination):
+    """فك ZIP بأمان بدون السماح بخروج الملفات من مجلد السيرفر."""
+    base = os.path.abspath(destination)
+    with zipfile.ZipFile(zip_path, "r") as zf:
+        bad = zf.testzip()
+        if bad:
+            raise ValueError(f"ملف ZIP تالف: {bad}")
+        for info in zf.infolist():
+            target = os.path.abspath(os.path.join(base, info.filename))
+            if not (target == base or target.startswith(base + os.sep)):
+                raise ValueError("ZIP يحتوي على مسار غير آمن")
+        zf.extractall(base)
+
+
+def flatten_single_project_folder(path):
+    """إذا كان ZIP يحتوي مجلد مشروع واحد فقط، ينقل محتواه إلى جذر السيرفر."""
+    try:
+        entries = os.listdir(path)
+        files = [x for x in entries if x not in {"out.log", "errors.log", "server.log"}]
+        if len(files) == 1 and os.path.isdir(os.path.join(path, files[0])):
+            root = os.path.join(path, files[0])
+            for item in os.listdir(root):
+                src = os.path.join(root, item)
+                dst = os.path.join(path, item)
+                if os.path.exists(dst):
+                    continue
+                shutil.move(src, dst)
+            shutil.rmtree(root, ignore_errors=True)
+    except Exception:
+        pass
+
+
 def auto_create_server_from_upload():
     """رفع ملف مباشرة من لوحة المستخدم وإنشاء السيرفر تلقائياً."""
     if "username" not in session:
@@ -1749,10 +1968,12 @@ def auto_create_server_from_upload():
         server_type = "Node.js"
     elif ext == '.php':
         server_type = "PHP"
+    elif ext in {'.html', '.htm'}:
+        server_type = "Static"
     elif ext == '.zip':
         server_type = "Python"
     else:
-        return jsonify({"success": False, "message": "ارفع ملف Python أو ZIP أو JavaScript أو PHP"})
+        return jsonify({"success": False, "message": "ارفع Python أو Node.js أو PHP أو HTML أو ZIP"})
 
     base_name = os.path.splitext(filename)[0]
     safe_name = re.sub(r'[^a-zA-Z0-9_-]+', '', base_name) or "my-server"
@@ -1764,23 +1985,17 @@ def auto_create_server_from_upload():
     plan_id = user.get("plan", "free")
     plan = db["plans"].get(plan_id, db["plans"]["free"])
     assigned_port = get_assigned_port()
-    startup_file = filename if ext in {'.py', '.js', '.php'} else ""
+    startup_file = filename if ext in {'.py', '.js', '.php', '.html', '.htm'} else ""
 
     try:
         f.save(os.path.join(path, filename))
         if ext == '.zip':
             zip_path = os.path.join(path, filename)
-            with zipfile.ZipFile(zip_path, 'r') as zf:
-                if zf.testzip():
-                    raise ValueError("ملف ZIP تالف")
-                zf.extractall(path)
+            safe_extract_zip(zip_path, path)
+            flatten_single_project_folder(path)
             # تحديد نوع المشروع وملف التشغيل من المحتوى بعد فك الضغط.
-            if os.path.exists(os.path.join(path, "package.json")) or any(name.endswith('.js') for name in os.listdir(path)):
-                server_type = "Node.js"
-            elif any(name.endswith('.php') for name in os.listdir(path)):
-                server_type = "PHP"
-            else:
-                server_type = "Python"
+            project_type = detect_project_type(path)
+            server_type = project_type
             startup_file = detect_main_file(path, server_type)
 
         db["servers"][folder] = {
@@ -1968,6 +2183,39 @@ def delete_files(folder):
         return jsonify({"success": True, "message": f"🗑 تم حذف {deleted} ملف"})
     return jsonify({"success": False, "message": "فشل الحذف"})
 
+@app.route('/api/files/delete-all/<folder>', methods=['POST'])
+def delete_all_server_files(folder):
+    if "username" not in session:
+        return jsonify({"success": False, "message": "غير مصرح"}), 401
+    srv = db["servers"].get(folder)
+    if not srv or srv.get("owner") != session["username"]:
+        return jsonify({"success": False, "message": "غير مصرح"}), 403
+    base = os.path.abspath(srv.get("path", ""))
+    if not base or not os.path.isdir(base):
+        return jsonify({"success": True, "message": "لا توجد ملفات"})
+    stop_server_process(folder)
+    removed = 0
+    errors = []
+    for name in os.listdir(base):
+        target = os.path.join(base, name)
+        try:
+            if os.path.isdir(target) and not os.path.islink(target):
+                shutil.rmtree(target)
+            else:
+                os.remove(target)
+            removed += 1
+        except Exception as e:
+            errors.append(f"{name}: {e}")
+    srv["startup_file"] = ""
+    srv["status"] = "Stopped"
+    srv["pid"] = None
+    save_db(db)
+    msg = f"🗑 تم حذف جميع ملفات السيرفر ({removed})"
+    if errors:
+        msg += f" — تعذر حذف {len(errors)} عنصر"
+    return jsonify({"success": True, "message": msg, "removed": removed, "errors": errors})
+
+
 @app.route('/api/files/create/<folder>', methods=['POST'])
 def create_file_api(folder):
     if "username" not in session:
@@ -2006,6 +2254,56 @@ def set_startup_file(folder):
     srv["startup_file"] = filename
     save_db(db)
     return jsonify({"success": True, "message": f"✅ تم تعيين {filename} كملف التشغيل"})
+
+@app.route('/api/admin/user-servers/<username>')
+def admin_user_servers(username):
+    if not _check_admin_access():
+        return jsonify({"success": False, "message": "غير مصرح"}), 403
+    username = unquote(username)
+    servers = []
+    for folder, srv in db.get("servers", {}).items():
+        if srv.get("owner") != username:
+            continue
+        servers.append({
+            "folder": folder,
+            "title": srv.get("name", folder),
+            "type": srv.get("type", "Python"),
+            "status": srv.get("status", "Stopped"),
+            "created_at": srv.get("created_at", ""),
+            "port": srv.get("port"),
+            "disk_used": 0
+        })
+    return jsonify({"success": True, "servers": servers})
+
+
+@app.route('/api/admin/servers')
+def admin_all_servers():
+    if not _check_admin_access():
+        return jsonify({"success": False, "message": "غير مصرح"}), 403
+    servers = []
+    for folder, srv in db.get("servers", {}).items():
+        disk_used = 0
+        base = srv.get("path", "")
+        if os.path.isdir(base):
+            for root, dirs, files in os.walk(base):
+                dirs[:] = [d for d in dirs if d not in {".venv", "__pycache__"}]
+                for name in files:
+                    try:
+                        disk_used += os.path.getsize(os.path.join(root, name))
+                    except Exception:
+                        pass
+        servers.append({
+            "folder": folder,
+            "title": srv.get("name", folder),
+            "owner": srv.get("owner", ""),
+            "type": srv.get("type", "Python"),
+            "status": srv.get("status", "Stopped"),
+            "created_at": srv.get("created_at", ""),
+            "port": srv.get("port"),
+            "disk_used": round(disk_used / (1024 * 1024), 2)
+        })
+    return jsonify({"success": True, "servers": servers, "count": len(servers)})
+
 
 @app.route('/api/admin/server-files/<folder>')
 def admin_server_files(folder):
@@ -2075,6 +2373,39 @@ def admin_delete_file(folder):
         return jsonify({"success": True, "message": "🗑 تم حذف الملف من السيرفر"})
     except Exception as e:
         return jsonify({"success": False, "message": str(e)}), 500
+
+@app.route('/api/admin/server/delete-all/<folder>', methods=['POST'])
+def admin_delete_all_server_files(folder):
+    if not _check_admin_access():
+        return jsonify({"success": False, "message": "غير مصرح"}), 403
+    srv = db["servers"].get(unquote(folder))
+    if not srv:
+        return jsonify({"success": False, "message": "السيرفر غير موجود"}), 404
+    base = os.path.abspath(srv.get("path", ""))
+    if not base or not os.path.isdir(base):
+        return jsonify({"success": True, "message": "لا توجد ملفات للحذف"})
+    stop_server_process(folder)
+    removed = 0
+    errors = []
+    for name in os.listdir(base):
+        target = os.path.join(base, name)
+        try:
+            if os.path.isdir(target) and not os.path.islink(target):
+                shutil.rmtree(target)
+            else:
+                os.remove(target)
+            removed += 1
+        except Exception as e:
+            errors.append(f"{name}: {e}")
+    srv["startup_file"] = ""
+    srv["status"] = "Stopped"
+    srv["pid"] = None
+    save_db(db)
+    msg = f"🗑 تم حذف جميع ملفات السيرفر ({removed})"
+    if errors:
+        msg += f" — تعذر حذف {len(errors)} عنصر"
+    return jsonify({"success": True, "message": msg, "removed": removed, "errors": errors})
+
 
 @app.route('/api/admin/server/download-all/<folder>')
 def admin_download_server(folder):

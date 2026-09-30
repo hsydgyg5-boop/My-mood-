@@ -940,10 +940,13 @@
                 <button class="create-server-btn php" onclick="showCreateServerModal('PHP')">
                     <i class="fab fa-php"></i> خادم PHP
                 </button>
+                <button class="create-server-btn" style="background:linear-gradient(135deg,#059669,#0d9488);" onclick="showCreateServerModal('Static')">
+                    <i class="fas fa-globe"></i> موقع HTML
+                </button>
                 <button class="create-server-btn" style="background:linear-gradient(135deg,#7c3aed,#a855f7);" onclick="document.getElementById('autoServerUpload').click()">
                     <i class="fas fa-cloud-arrow-up"></i> رفع ملف وتشغيله تلقائياً
                 </button>
-                <input type="file" id="autoServerUpload" accept=".py,.zip,.js,.php" style="display:none" onchange="autoCreateServer(this.files[0])">
+                <input type="file" id="autoServerUpload" accept=".py,.zip,.js,.php,.html,.htm" style="display:none" onchange="autoCreateServer(this.files[0])">
             </div>
         </div>
         <div class="servers-grid" id="serversGrid"><div style="text-align:center; padding:60px; color:#9ca3cf;">جاري التحميل...</div></div>
@@ -980,6 +983,7 @@
                 <button class="glow-btn" onclick="showCreateFileModal()" style="background:#2d7aff;"><i class="fas fa-file"></i> ملف جديد</button>
                 <button class="glow-btn" onclick="installPackages()" style="background:#2d7aff;"><i class="fas fa-cube"></i> تثبيت المكتبات</button>
                 <button class="glow-btn" onclick="showCreateFolderModal()" style="background:#2d7aff;"><i class="fas fa-folder-plus"></i> مجلد جديد</button>
+                <button class="glow-btn" onclick="deleteAllServerFiles()" style="background:linear-gradient(135deg,#b91c1c,#ef4444);"><i class="fas fa-trash-can"></i> حذف جميع الملفات</button>
             </div>
             <div class="files-list-wrap" id="filesList"></div>
         </div>
@@ -1180,9 +1184,15 @@
         if (type === 'Python') {
             label.innerHTML = '🐍 Python';
             title.innerHTML = '<i class="fab fa-python"></i> إنشاء خادم Python';
-        } else {
+        } else if (type === 'PHP') {
             label.innerHTML = '🐘 PHP';
             title.innerHTML = '<i class="fab fa-php"></i> إنشاء خادم PHP';
+        } else if (type === 'Static') {
+            label.innerHTML = '🌐 HTML';
+            title.innerHTML = '<i class="fas fa-globe"></i> إنشاء موقع HTML';
+        } else {
+            label.innerHTML = '🟨 Node.js';
+            title.innerHTML = '<i class="fab fa-node-js"></i> إنشاء خادم Node.js';
         }
         
         document.getElementById('createServerModal').classList.add('active');
@@ -1311,7 +1321,7 @@
             grid.innerHTML = '';
             
             // تعريف أيقونات وأنواع السيرفرات بشكل صحيح
-            const typeIcons = { 'Python': '🐍', 'PHP': '🐘', 'Node.js': '🟨' };
+            const typeIcons = { 'Python': '🐍', 'PHP': '🐘', 'Node.js': '🟨', 'Static': '🌐' };
             const typeClasses = { 'Python': 'badge-python', 'PHP': 'badge-php', 'Node.js': 'badge-node' };
             
             d.servers.forEach(s => {
@@ -1429,7 +1439,7 @@
         document.getElementById('planDetails').innerText = s.plan === 'free' ? 'مجاني' : s.plan;
         
         // عرض نوع السيرفر في التفاصيل
-        const typeIcons = { 'Python': '🐍', 'PHP': '🐘', 'Node.js': '🟨' };
+        const typeIcons = { 'Python': '🐍', 'PHP': '🐘', 'Node.js': '🟨', 'Static': '🌐' };
         const typeIcon = typeIcons[s.type] || '📦';
         const typeName = s.type || 'Python';
         document.getElementById('serverTypeBadge').innerHTML = `${typeIcon} ${typeName} | ${escapeHtml(s.title)}`;
@@ -1683,6 +1693,25 @@
             showToast(d.message || 'تم فك الضغط', 'success');
             await loadFiles();
         } catch(e) { showToast(e.message || 'فشل فك الضغط', 'error'); }
+    }
+
+    async function deleteAllServerFiles() {
+        if(!currentServer) return;
+        if(!confirm('⚠️ سيتم حذف جميع الملفات داخل هذا السيرفر نهائياً، ولن يتم حذف السيرفر نفسه. هل أنت متأكد؟')) return;
+        if(!confirm('⚠️ تأكيد أخير: سيتم إيقاف السيرفر وحذف كل الملفات والمجلدات داخله.')) return;
+        try {
+            const r = await fetch(`/api/files/delete-all/${encodeURIComponent(currentServer.folder)}`, {method:'POST'});
+            const d = await r.json();
+            if(!d.success) { showToast(d.message || 'فشل حذف الملفات','error'); return; }
+            showToast(d.message || 'تم حذف جميع الملفات','success');
+            currentServer.status = 'Stopped';
+            currentServer.startup_file = '';
+            await loadFiles();
+            await loadStartupFiles();
+            if (typeof fetchStats === 'function') fetchStats();
+        } catch(e) {
+            showToast('خطأ في الاتصال','error');
+        }
     }
 
     async function installPackages() { 
