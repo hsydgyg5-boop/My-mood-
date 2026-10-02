@@ -1735,8 +1735,10 @@ def rename_file(folder):
     new_name = safe_user_filename(data.get("new_name", "").strip())
     if not old_name or not new_name or '..' in old_name:
         return jsonify({"success": False, "message": "اسم غير صالح"})
-    old_path = os.path.join(srv["path"], old_name)
-    new_path = os.path.join(srv["path"], new_name)
+    old_path = safe_server_path(srv["path"], old_name, allow_dir=True)
+    new_path = safe_server_path(srv["path"], new_name, allow_dir=True)
+    if not old_path or not new_path:
+        return jsonify({"success": False, "message": "مسار غير صالح"}), 400
     if not os.path.exists(old_path):
         return jsonify({"success": False, "message": "الملف غير موجود"})
     if os.path.exists(new_path):
