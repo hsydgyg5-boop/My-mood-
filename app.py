@@ -2,7 +2,6 @@ import os
 import json
 import subprocess
 import re
-from urllib.parse import quote, unquote
 import sys
 import hashlib
 import secrets
@@ -16,17 +15,13 @@ import psutil
 import socket
 import tempfile
 import ast
-import shlex
 import unicodedata
 from datetime import datetime, timedelta
-from flask import Flask, send_from_directory, send_file, request, jsonify, session, redirect, make_response, Response
+from flask import Flask, send_from_directory, send_file, request, jsonify, session, redirect, make_response
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-# التخزين الدائم: نستخدم مسار Railway Volume إذا كان موجوداً.
-# مهم: لا نستخدم db.json الموجود داخل المشروع كمصدر لبيانات المستخدمين.
-DATA_DIR = (os.environ.get("MAZAGI_DATA_DIR") or
-            os.environ.get("RAILWAY_VOLUME_MOUNT_PATH") or
-            "/data")
+# تخزين دائم: على Railway اربط Volume على /data. إذا لم يوجد Volume يرجع للمجلد المحلي.
+DATA_DIR = os.environ.get("MAZAGI_DATA_DIR", "/data" if os.path.isdir("/data") else BASE_DIR)
 try:
     os.makedirs(DATA_DIR, exist_ok=True)
 except Exception:
@@ -96,113 +91,110 @@ def get_pending_users_list():
     return pending
 
 # ============== قاعدة البيانات ==============
+# IMPORTANT:
+# GitHub/الكود يحتوي فقط على التطبيق. بيانات المستخدمين والملفات تحفظ على Railway Volume.
 DB_FILE = os.path.join(DATA_DIR, "db.json")
-BUNDLED_DB_FILE = os.path.join(BASE_DIR, "db.json")
+DB_SCHEMA_VERSION = 3
+DB_MIGRATION_BACKUP_DIR = os.path.join(DATA_DIR, "_old_data_backup")
 
-def load_db():
-    # القاعدة الدائمة هي الأساس. إذا لم توجد، نستخدم فقط لقطة portable_data/db.json إن وُجدت.
-    # وجود DB_FILE يعني أن بيانات Railway الحالية لها الأولوية ولا يتم استبدالها.
-    if not os.path.exists(DB_FILE):
-        portable_db = os.path.join(BASE_DIR, "portable_data", "db.json")
-        if os.path.exists(portable_db):
-            try:
-                os.makedirs(os.path.dirname(DB_FILE), exist_ok=True)
-                shutil.copy2(portable_db, DB_FILE)
-            except Exception:
-                pass
-    if os.path.exists(DB_FILE):
-        try:
-            with open(DB_FILE, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-                # ضمان وجود بنية قاعدة البيانات والخطط الافتراضية حتى لو كانت db.json جديدة أو فارغة.
-                default_plans = {
-                    "free": {"name": "🎁 مجاني", "storage": 512000, "ram": 256, "cpu": 0.5, "max_servers": 2, "price": 0},
-                    "4gb": {"name": "💎 4 جيجا", "storage": 4096000, "ram": 1024, "cpu": 1, "max_servers": 5, "price": 5},
-                    "10gb": {"name": "💎 10 جيجا", "storage": 10240000, "ram": 2048, "cpu": 2, "max_servers": 10, "price": 10},
-                    "40gb": {"name": "💎 40 جيجا", "storage": 40960000, "ram": 4096, "cpu": 4, "max_servers": 20, "price": 25}
-                }
-                data.setdefault("users", {})
-                data.setdefault("servers", {})
-                data.setdefault("logs", [])
-                data.setdefault("plans", {})
-                for plan_id, plan_data in default_plans.items():
-                    data["plans"].setdefault(plan_id, plan_data)
+DEFAULT_PLANS = {
+    "free": {"name": "🎁 مجاني", "storage": 512000, "ram": 256, "cpu": 0.5, "max_servers": 2, "price": 0},
+    "4gb": {"name": "💎 4 جيجا", "storage": 4096000, "ram": 1024, "cpu": 1, "max_servers": 5, "price": 5},
+    "10gb": {"name": "💎 10 جيجا", "storage": 10240000, "ram": 2048, "cpu": 2, "max_servers": 10, "price": 10},
+    "40gb": {"name": "💎 40 جيجا", "storage": 40960000, "ram": 4096, "cpu": 4, "max_servers": 20, "price": 25}
+}
 
-                # إصلاح حساب الأدمن تلقائياً إذا كانت قاعدة البيانات القديمة لا تحتويه.
-                # لا يتم حذف أو تعديل أي مستخدم موجود.
-                if ADMIN_USERNAME not in data.get("users", {}):
-                    admin_hash = hashlib.sha256(ADMIN_PASSWORD_RAW.encode()).hexdigest()
-                    data.setdefault("users", {})[ADMIN_USERNAME] = {
-                        "password": admin_hash,
-                        "is_admin": True,
-                        "created_at": str(datetime.now()),
-                        "max_servers": 999999,
-                        "expiry_days": 3650,
-                        "last_login": None,
-                        "telegram_id": None,
-                        "api_key": None,
-                        "storage_limit": 10240,
-                        "plan": "admin",
-                        "status": "approved"
-                    }
-                    save_db(data)
-                else:
-                    # ضمان صلاحيات الأدمن بدون تغيير كلمة مرور الحساب الموجود.
-                    data["users"][ADMIN_USERNAME]["is_admin"] = True
-                    data["users"][ADMIN_USERNAME].setdefault("status", "approved")
-                return data
-        except Exception:
-            pass
-    admin_hash = hashlib.sha256(ADMIN_PASSWORD_RAW.encode()).hexdigest()
-    default_db = {
-        "users": {
-            ADMIN_USERNAME: {
-                "password": admin_hash,
-                "is_admin": True,
-                "created_at": str(datetime.now()),
-                "max_servers": 999999,
-                "expiry_days": 3650,
-                "last_login": None,
-                "telegram_id": None,
-                "api_key": None,
-                "storage_limit": 10240,
-                "plan": "admin",
-                "status": "approved"
-            }
-        },
+def _admin_record():
+    return {
+        "password": hashlib.sha256(ADMIN_PASSWORD_RAW.encode()).hexdigest(),
+        "is_admin": True,
+        "created_at": str(datetime.now()),
+        "max_servers": 999999,
+        "expiry_days": 3650,
+        "last_login": None,
+        "telegram_id": None,
+        "api_key": None,
+        "storage_limit": 10240,
+        "plan": "admin",
+        "status": "approved"
+    }
+
+def _new_clean_db():
+    """قاعدة بيانات جديدة تماماً — لا تقرأ أي db.json قديم من الكود."""
+    return {
+        "schema_version": DB_SCHEMA_VERSION,
+        "created_for": "مزاجي 2026",
+        "users": {ADMIN_USERNAME: _admin_record()},
         "servers": {},
         "logs": [],
-        "plans": {
-            "free": {"name": "🎁 مجاني", "storage": 512000, "ram": 256, "cpu": 0.5, "max_servers": 2, "price": 0},
-            "4gb": {"name": "💎 4 جيجا", "storage": 4096000, "ram": 1024, "cpu": 1, "max_servers": 5, "price": 5},
-            "10gb": {"name": "💎 10 جيجا", "storage": 10240000, "ram": 2048, "cpu": 2, "max_servers": 10, "price": 10},
-            "40gb": {"name": "💎 40 جيجا", "storage": 40960000, "ram": 4096, "cpu": 4, "max_servers": 20, "price": 25}
-        }
+        "plans": {k: dict(v) for k, v in DEFAULT_PLANS.items()}
     }
-    save_db(default_db)
-    return default_db
+
+def _backup_legacy_data():
+    """يحفظ نسخة احتياطية من البيانات القديمة مرة واحدة قبل بدء القاعدة الجديدة."""
+    try:
+        os.makedirs(DB_MIGRATION_BACKUP_DIR, exist_ok=True)
+        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        if os.path.exists(DB_FILE):
+            shutil.copy2(DB_FILE, os.path.join(DB_MIGRATION_BACKUP_DIR, f"legacy_db_{stamp}.json"))
+        for dirname in ("USERS", "php_files"):
+            src_dir = os.path.join(DATA_DIR, dirname)
+            if os.path.exists(src_dir):
+                dst_dir = os.path.join(DB_MIGRATION_BACKUP_DIR, f"{dirname}_{stamp}")
+                shutil.move(src_dir, dst_dir)
+        print("ℹ️ تم أرشفة البيانات القديمة مرة واحدة وإنشاء قاعدة مزاجي جديدة.")
+    except Exception as e:
+        print(f"⚠️ تعذر أرشفة بعض البيانات القديمة: {e}")
+
+def load_db():
+    # إذا كانت DB القديمة بلا schema_version، نبدأ قاعدة جديدة مرة واحدة.
+    # القديمة لا تُحذف نهائياً: تُنقل إلى _old_data_backup حتى لا تضيع.
+    if os.path.exists(DB_FILE):
+        try:
+            with open(DB_FILE, "r", encoding="utf-8") as f:
+                existing = json.load(f)
+            if existing.get("schema_version") != DB_SCHEMA_VERSION:
+                _backup_legacy_data()
+        except Exception:
+            _backup_legacy_data()
+
+    if os.path.exists(DB_FILE):
+        try:
+            with open(DB_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            data.setdefault("schema_version", DB_SCHEMA_VERSION)
+            data.setdefault("created_for", "مزاجي 2026")
+            data.setdefault("users", {})
+            data.setdefault("servers", {})
+            data.setdefault("logs", [])
+            data.setdefault("plans", {})
+            for plan_id, plan_data in DEFAULT_PLANS.items():
+                data["plans"].setdefault(plan_id, plan_data)
+            if ADMIN_USERNAME not in data["users"]:
+                data["users"][ADMIN_USERNAME] = _admin_record()
+            else:
+                data["users"][ADMIN_USERNAME]["is_admin"] = True
+                data["users"][ADMIN_USERNAME].setdefault("status", "approved")
+            save_db(data)
+            return data
+        except Exception as e:
+            print(f"⚠️ تعذر قراءة قاعدة البيانات، سيتم إنشاء قاعدة جديدة: {e}")
+
+    # لا يوجد db.json مرفق يتم نسخه. هذا مقصود لمنع رجوع القاعدة القديمة.
+    data = _new_clean_db()
+    save_db(data)
+    return data
 
 def save_db(db_data):
     try:
         os.makedirs(os.path.dirname(DB_FILE), exist_ok=True)
-        tmp_file = DB_FILE + '.tmp'
-        with open(tmp_file, 'w', encoding='utf-8') as f:
+        tmp_file = DB_FILE + ".tmp"
+        db_data["schema_version"] = DB_SCHEMA_VERSION
+        with open(tmp_file, "w", encoding="utf-8") as f:
             json.dump(db_data, f, indent=4, ensure_ascii=False)
             f.flush()
             os.fsync(f.fileno())
         os.replace(tmp_file, DB_FILE)
-        # نسخة داخل المشروع للاحتفاظ بلقطة من قاعدة البيانات عند نقل/رفع المشروع.
-        # لا تُستخدم إذا كانت قاعدة /data موجودة، ولا تستبدلها أبداً.
-        try:
-            portable_dir = os.path.join(BASE_DIR, "portable_data")
-            os.makedirs(portable_dir, exist_ok=True)
-            portable_tmp = os.path.join(portable_dir, "db.json.tmp")
-            with open(portable_tmp, 'w', encoding='utf-8') as pf:
-                json.dump(db_data, pf, indent=4, ensure_ascii=False)
-                pf.flush(); os.fsync(pf.fileno())
-            os.replace(portable_tmp, os.path.join(portable_dir, "db.json"))
-        except Exception:
-            pass
         return True
     except Exception as e:
         print(f"❌ خطأ في حفظ DB: {e}")
@@ -218,104 +210,7 @@ def safe_user_filename(filename):
         return ''
     return name[:255]
 
-def safe_child_path(base, name):
-    """مسار آمن لملف/مجلد داخل مجلد السيرفر."""
-    clean = safe_user_filename(name)
-    if not clean:
-        return None
-    base_abs = os.path.abspath(base)
-    path_abs = os.path.abspath(os.path.join(base_abs, clean))
-    if os.path.commonpath([base_abs, path_abs]) != base_abs:
-        return None
-    return path_abs
-
-def safe_relative_path(base, name):
-    """مسار آمن يسمح بمجلدات فرعية مثل ملفات ZIP المفكوكة، بدون path traversal."""
-    if not name:
-        return None
-    raw = unicodedata.normalize('NFC', str(name)).replace('\\', '/')
-    parts = []
-    for part in raw.split('/'):
-        part = ''.join(ch for ch in part if ch >= ' ' and ch not in '\x7f')
-        if part in ('', '.'):
-            continue
-        if part == '..':
-            return None
-        parts.append(part)
-    if not parts:
-        return None
-    base_abs = os.path.abspath(base)
-    path_abs = os.path.abspath(os.path.join(base_abs, *parts))
-    if os.path.commonpath([base_abs, path_abs]) != base_abs:
-        return None
-    return path_abs
-
 db = load_db()
-
-def _backup_current_db_once():
-    """ينشئ نسخة احتياطية غير مدمرة من قاعدة البيانات الحالية قبل أي إصلاح."""
-    try:
-        if not os.path.exists(DB_FILE):
-            return
-        backup_dir = os.path.join(DATA_DIR, "backups")
-        os.makedirs(backup_dir, exist_ok=True)
-        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        target = os.path.join(backup_dir, f"db_before_update_{stamp}.json")
-        if not os.path.exists(target):
-            shutil.copy2(DB_FILE, target)
-    except Exception as exc:
-        print(f"⚠️ تعذر إنشاء نسخة DB احتياطية: {exc}")
-
-def _safe_server_dir(owner, folder):
-    owner = safe_user_filename(owner)
-    folder = safe_user_filename(folder)
-    if not owner or not folder:
-        return None
-    return os.path.join(USERS_DIR, owner, "SERVERS", folder)
-
-def _copy_tree_if_needed(src, dst):
-    try:
-        if not src or not os.path.exists(src) or os.path.exists(dst):
-            return False
-        os.makedirs(os.path.dirname(dst), exist_ok=True)
-        if os.path.isdir(src):
-            shutil.copytree(src, dst, dirs_exist_ok=True)
-        else:
-            shutil.copy2(src, dst)
-        return True
-    except Exception as exc:
-        print(f"⚠️ تعذر استرجاع الملفات من {src}: {exc}")
-        return False
-
-def migrate_server_storage():
-    """يربط السيرفرات القديمة بمسار /data بدون حذف أي ملف.
-    إذا كانت الملفات ما زالت في المسار القديم، يتم نسخها إلى التخزين الدائم.
-    """
-    changed = False
-    for folder, srv in db.get("servers", {}).items():
-        owner = srv.get("owner")
-        persistent = _safe_server_dir(owner, folder)
-        if not persistent:
-            continue
-        os.makedirs(os.path.dirname(persistent), exist_ok=True)
-        current = srv.get("path") or ""
-        if os.path.abspath(current) != os.path.abspath(persistent):
-            candidates = [current,
-                          os.path.join(BASE_DIR, "USERS", str(owner), "SERVERS", str(folder)),
-                          os.path.join("/app", "USERS", str(owner), "SERVERS", str(folder))]
-            for candidate in candidates:
-                if candidate and os.path.exists(candidate):
-                    _copy_tree_if_needed(candidate, persistent)
-                    break
-            srv["path"] = persistent
-            changed = True
-        else:
-            os.makedirs(persistent, exist_ok=True)
-    if changed:
-        save_db(db)
-
-_backup_current_db_once()
-migrate_server_storage()
 
 # ============== كشف تلقائي لنوع السيرفر ==============
 def auto_detect_server_type(srv_path: str, srv: dict):
@@ -388,106 +283,63 @@ def fix_server_types():
 
 fix_server_types()
 
-# ============== تشغيل شامل واكتشاف المنفذ ==============
-SUPPORTED_SERVER_TYPES = ("Python", "Node.js", "PHP", "Ruby", "Java", "Go", "Rust", "Static")
-COMMON_WEB_PORTS = (3000, 4000, 5000, 5173, 8000, 8001, 8080, 8081, 8088, 8888, 9000)
-
-def detect_project_type(srv_path: str):
-    try:
-        names = set()
-        for root, dirs, files in os.walk(srv_path):
-            depth = os.path.relpath(root, srv_path).count(os.sep)
-            if depth > 2:
-                dirs[:] = []
-                continue
-            names.update(n.lower() for n in files)
-    except Exception:
-        return "Python"
-    if "package.json" in names or any(n.endswith(('.js','.mjs','.cjs')) for n in names): return "Node.js"
-    if "composer.json" in names or any(n.endswith('.php') for n in names): return "PHP"
-    if "cargo.toml" in names or any(n.endswith('.rs') for n in names): return "Rust"
-    if "go.mod" in names or any(n.endswith('.go') for n in names): return "Go"
-    if any(n in names for n in ('pom.xml','build.gradle','build.gradle.kts')) or any(n.endswith('.java') for n in names): return "Java"
-    if "gemfile" in names or any(n.endswith('.rb') for n in names): return "Ruby"
-    if any(n.endswith(('.html','.htm')) for n in names): return "Static"
-    if any(n.endswith('.py') for n in names): return "Python"
-    return "Python"
-
-def detect_main_file(srv_path: str, server_type: str) -> str:
-    if server_type == "Node.js":
-        pkg=os.path.join(srv_path,'package.json')
-        if os.path.exists(pkg):
-            try:
-                data=json.load(open(pkg,encoding='utf-8'))
-                main=data.get('main','')
-                if main and os.path.exists(os.path.join(srv_path,main)): return main
-            except Exception: pass
-        for c in ['index.js','index.mjs','server.js','app.js','main.js','bot.js']:
-            if os.path.exists(os.path.join(srv_path,c)): return c
-        return next((f for f in os.listdir(srv_path) if f.endswith(('.js','.mjs','.cjs'))),'')
-    if server_type == "PHP":
-        for c in ['index.php','main.php','app.php','start.php','run.php','bot.php']:
-            if os.path.exists(os.path.join(srv_path,c)): return c
-        return next((f for f in os.listdir(srv_path) if f.endswith('.php')),'')
-    if server_type == "Ruby":
-        for c in ['config.ru','app.rb','server.rb','main.rb','index.rb']:
-            if os.path.exists(os.path.join(srv_path,c)): return c
-        return next((f for f in os.listdir(srv_path) if f.endswith('.rb')),'')
-    if server_type == "Java":
-        for c in ['pom.xml','build.gradle','build.gradle.kts']:
-            if os.path.exists(os.path.join(srv_path,c)): return c
-        return next((f for f in os.listdir(srv_path) if f.endswith('.java')),'')
-    if server_type == "Go":
-        return 'go.mod' if os.path.exists(os.path.join(srv_path,'go.mod')) else next((f for f in os.listdir(srv_path) if f.endswith('.go')),'')
-    if server_type == "Rust":
-        return 'Cargo.toml' if os.path.exists(os.path.join(srv_path,'Cargo.toml')) else next((f for f in os.listdir(srv_path) if f.endswith('.rs')),'')
-    if server_type == "Static":
-        for c in ['index.html','index.htm','home.html']:
-            if os.path.exists(os.path.join(srv_path,c)): return c
-        return next((f for f in os.listdir(srv_path) if f.endswith(('.html','.htm'))),'')
-    for c in ['main.py','app.py','server.py','index.py','run.py','start.py','bot.py']:
-        if os.path.exists(os.path.join(srv_path,c)): return c
-    return next((f for f in os.listdir(srv_path) if f.endswith('.py')),'')
-
-def _list_process_ports(pid):
-    ports=set()
-    try:
-        root=psutil.Process(pid); procs=[root]+root.children(recursive=True)
-        for proc in procs:
-            try: conns=proc.net_connections(kind='inet')
-            except Exception: conns=[]
-            for c in conns:
-                if getattr(c,'status',None)==psutil.CONN_LISTEN and getattr(c,'laddr',None):
-                    if getattr(c.laddr,'port',None): ports.add(int(c.laddr.port))
-    except Exception: pass
-    return ports
-
-def _port_is_open(port):
-    try:
-        with socket.create_connection(('127.0.0.1',int(port)),timeout=.25): return True
-    except Exception: return False
-
-def discover_running_port(pid, preferred=None, timeout=25):
-    deadline=time.time()+timeout
-    while time.time()<deadline:
-        candidates=set(_list_process_ports(pid))
-        if preferred: candidates.add(int(preferred))
-        for port in sorted(candidates):
-            if _port_is_open(port): return port
-        try:
-            if not psutil.Process(pid).is_running(): return None
-        except Exception: return None
-        time.sleep(.5)
-    return None
-
-PORT_RANGE_START=8100
-PORT_RANGE_END=9100
+# ============== المنافذ ==============
+PORT_RANGE_START = 8100
+PORT_RANGE_END = 9100
 
 def get_assigned_port():
-    used={srv.get('port') for srv in db.get('servers',{}).values() if srv.get('port')}
-    for port in range(PORT_RANGE_START,PORT_RANGE_END):
-        if port not in used and not _port_is_open(port): return port
+    used = set()
+    for srv in db.get("servers", {}).values():
+        if srv.get("port"):
+            used.add(srv["port"])
+    for port in range(PORT_RANGE_START, PORT_RANGE_END):
+        if port not in used:
+            try:
+                s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                s.settimeout(0.1)
+                result = s.connect_ex(('127.0.0.1', port))
+                s.close()
+                if result != 0:
+                    return port
+            except Exception:
+                return port
     return PORT_RANGE_START
+
+# ============== كشف الملف الرئيسي ==============
+def detect_main_file(srv_path: str, server_type: str) -> str:
+    if server_type == "Node.js":
+        pkg = os.path.join(srv_path, "package.json")
+        if os.path.exists(pkg):
+            try:
+                with open(pkg, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                main = data.get("main", "")
+                if main and os.path.exists(os.path.join(srv_path, main)):
+                    return main
+                scripts = data.get("scripts", {})
+                start_cmd = scripts.get("start", "")
+                m = re.search(r'node\s+(\S+\.js)', start_cmd)
+                if m and os.path.exists(os.path.join(srv_path, m.group(1))):
+                    return m.group(1)
+            except Exception:
+                pass
+        for candidate in ["index.js", "bot.js", "app.js", "main.js", "server.js"]:
+            if os.path.exists(os.path.join(srv_path, candidate)):
+                return candidate
+        js_files = [f for f in os.listdir(srv_path) if f.endswith('.js')]
+        return js_files[0] if js_files else ""
+    elif server_type == "PHP":
+        for candidate in ["index.php", "main.php", "bot.php", "app.php", "start.php", "run.php"]:
+            if os.path.exists(os.path.join(srv_path, candidate)):
+                return candidate
+        php_files = [f for f in os.listdir(srv_path) if f.endswith('.php')]
+        return php_files[0] if php_files else ""
+    else:
+        for candidate in ["main.py", "bot.py", "app.py", "index.py", "run.py", "start.py"]:
+            if os.path.exists(os.path.join(srv_path, candidate)):
+                return candidate
+        py_files = [f for f in os.listdir(srv_path) if f.endswith('.py')]
+        return py_files[0] if py_files else ""
 
 # ============== تثبيت تلقائي للمكتبات ==============
 # أسماء الاستيراد الشائعة التي تختلف عن اسم الحزمة في PyPI.
@@ -658,76 +510,139 @@ def auto_install_deps(srv_path: str, server_type: str, log_file):
     log_file.flush()
 
 # ============== تشغيل السيرفر ==============
-def start_server_process(folder):
-    srv=db['servers'].get(folder)
-    if not srv: return False,'السيرفر غير موجود'
-    srv_path=srv.get('path','')
-    if not os.path.isdir(srv_path): return False,'مجلد المشروع غير موجود'
-    detected=detect_project_type(srv_path)
-    if not srv.get('type') or srv.get('type')=='Python': srv['type']=detected
-    server_type=srv.get('type','Python')
-    main_file=srv.get('startup_file') or detect_main_file(srv_path,server_type)
-    srv['startup_file']=main_file
-    if server_type=='Static':
-        if not main_file: return False,'لا يوجد ملف HTML'
-        srv.update(status='Running',pid=None,port=None,start_time=time.time())
-        save_db(db); return True,'✅ تم تشغيل الموقع الثابت'
-    if not main_file: return False,f'لا يوجد ملف تشغيل لـ {server_type}'
-    file_path=os.path.join(srv_path,main_file)
-    if server_type not in ('Java','Go','Rust') and not os.path.exists(file_path): return False,f"الملف '{main_file}' غير موجود"
-    preferred=srv.get('port') or get_assigned_port(); srv['port']=preferred
-    log_path=os.path.join(srv_path,'out.log'); error_path=os.path.join(srv_path,'errors.log')
-    log_file=open(log_path,'a',encoding='utf-8'); log_file.write(f"\n{'='*60}\n🚀 بدء التشغيل {datetime.now()}\n📁 {main_file}\n🔌 المنفذ المطلوب: {preferred}\n🏷 النوع: {server_type}\n{'='*60}\n"); log_file.flush()
-    env=os.environ.copy(); env.update(PORT=str(preferred),SERVER_PORT=str(preferred),HOST='0.0.0.0',HOSTNAME='0.0.0.0')
+def _write_if_missing(path, content, mode=0o664):
+    """ينشئ ملفاً أساسياً فقط إذا كان مفقوداً، ولا يلمس ملفاً موجوداً."""
+    if os.path.exists(path):
+        return False
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(content)
     try:
-        if server_type=='Node.js':
-            pkg=os.path.join(srv_path,'package.json')
-            use_npm=False
-            if os.path.exists(pkg):
-                try: use_npm=bool(json.load(open(pkg,encoding='utf-8')).get('scripts',{}).get('start'))
-                except Exception: pass
-            cmd=['npm','run','start'] if use_npm else ['node',main_file]
-        elif server_type=='PHP': cmd=['php','-S',f'0.0.0.0:{preferred}','-t',srv_path]
-        elif server_type=='Ruby': cmd=['bundle','exec','rackup','-o','0.0.0.0','-p',str(preferred)] if main_file=='config.ru' and shutil.which('bundle') else ['ruby',main_file]
-        elif server_type=='Java':
-            if os.path.exists(os.path.join(srv_path,'mvnw')): cmd=['./mvnw','spring-boot:run']
-            elif os.path.exists(os.path.join(srv_path,'gradlew')): cmd=['./gradlew','bootRun']
-            elif shutil.which('mvn') and os.path.exists(os.path.join(srv_path,'pom.xml')): cmd=['mvn','spring-boot:run']
-            elif shutil.which('gradle') and os.path.exists(os.path.join(srv_path,'build.gradle')): cmd=['gradle','bootRun']
-            else:
-                jf=main_file if main_file.endswith('.java') else next((x for x in os.listdir(srv_path) if x.endswith('.java')),'')
-                if not jf: return False,'لا يوجد مشروع Java قابل للتشغيل'
-                cls=os.path.splitext(jf)[0]; cmd=['sh','-lc',f'javac {shlex.quote(jf)} && java {shlex.quote(cls)}']
-        elif server_type=='Go': cmd=['go','run','.'] if os.path.exists(os.path.join(srv_path,'go.mod')) else ['go','run',main_file]
-        elif server_type=='Rust': cmd=['cargo','run','--release']
-        else:
-            with open(log_path,'a',encoding='utf-8') as dep_log: python_bin=ensure_python_environment(srv_path,dep_log)
-            cmd=[python_bin,'-u',main_file]
-        proc=subprocess.Popen(cmd,cwd=srv_path,stdout=log_file,stderr=open(error_path,'a',encoding='utf-8'),env=env,preexec_fn=os.setsid if hasattr(os,'setsid') else None)
-        srv.update(pid=proc.pid,status='Starting',start_time=time.time()); save_db(db)
-        def settle():
-            actual=discover_running_port(proc.pid,preferred,30)
+        os.chmod(path, mode)
+    except Exception:
+        pass
+    return True
+
+def repair_server_environment(srv_path: str, server_type: str):
+    """إصلاح آمن قبل التشغيل: لا يستبدل ملفات المستخدم ولا يغير مسار الخادم."""
+    repaired = []
+    warnings = []
+    try:
+        os.makedirs(srv_path, exist_ok=True)
+        # تأكد من قابلية القراءة/الكتابة للمجلد قدر الإمكان. لا نستخدم chmod واسعاً على الملفات.
+        if not os.access(srv_path, os.R_OK | os.W_OK | os.X_OK):
             try:
-                if actual:
-                    srv.update(port=actual,status='Running')
-                    with open(log_path,'a',encoding='utf-8') as lf: lf.write(f'\n✅ الموقع يستمع فعلياً على المنفذ {actual}\n')
-                elif proc.poll() is not None:
-                    srv.update(status='Stopped',pid=None)
-                    with open(log_path,'a',encoding='utf-8') as lf: lf.write(f'\n❌ انتهت العملية برمز {proc.returncode}; راجع errors.log\n')
-                else:
-                    srv['status']='Running'
-                    with open(log_path,'a',encoding='utf-8') as lf: lf.write('\nℹ️ العملية تعمل لكن لم يتم اكتشاف منفذ HTTP.\n')
-                save_db(db)
-            except Exception: pass
-        threading.Thread(target=settle,daemon=True).start()
-        return True,'🚀 بدأ التشغيل — يتم اكتشاف المنفذ الحقيقي تلقائياً'
-    except FileNotFoundError:
-        srv.update(status='Stopped',pid=None); save_db(db); return False,f'❌ المشغّل غير موجود لهذا النوع: {server_type}'
+                os.chmod(srv_path, 0o755)
+            except Exception as e:
+                warnings.append(f"صلاحيات المجلد: {e}")
+
+        if server_type == "PHP":
+            index_path = os.path.join(srv_path, "index.php")
+            if not os.path.exists(index_path):
+                # لا ننشئ index.php إلا إذا لم يوجد أي ملف PHP؛ حتى لا نخفي ملف البداية الموجود.
+                php_files = [n for n in os.listdir(srv_path) if n.lower().endswith('.php')]
+                if not php_files:
+                    if _write_if_missing(index_path, "<?php\nheader('Content-Type: text/html; charset=UTF-8');\necho 'PHP server is ready. Upload your application files.';\n") :
+                        repaired.append("index.php")
+            htaccess = os.path.join(srv_path, ".htaccess")
+            htaccess_body = "# مزاجي: ملف أساسي يتم إنشاؤه فقط عند فقدانه\nDirectoryIndex index.php\nAddDefaultCharset UTF-8\n"
+            if _write_if_missing(htaccess, htaccess_body):
+                repaired.append(".htaccess")
+            # لا نفرض rewrite على تطبيق قد يملك قواعده الخاصة.
+        elif server_type == "Python":
+            if not os.path.exists(os.path.join(srv_path, "requirements.txt")):
+                # ملف فارغ آمن: التثبيت التلقائي يستنتج الاستيرادات من ملفات Python.
+                if _write_if_missing(os.path.join(srv_path, "requirements.txt"), "# Dependencies are detected automatically by Mazaji Host.\n"):
+                    repaired.append("requirements.txt")
+        return repaired, warnings
     except Exception as e:
-        srv.update(status='Stopped',pid=None); save_db(db)
-        try: log_file.write(f'\n❌ خطأ: {e}\n')
-        except Exception: pass
-        return False,str(e)
+        return repaired, [str(e)]
+
+def start_server_process(folder):
+    srv = db["servers"].get(folder)
+    if not srv:
+        return False, "السيرفر غير موجود"
+
+    # كشف تلقائي وإصلاح آمن قبل التشغيل
+    auto_detect_server_type(srv["path"], srv)
+
+    server_type = srv.get("type", "Python")
+    repaired, repair_warnings = repair_server_environment(srv["path"], server_type)
+    if repaired:
+        try:
+            with open(os.path.join(srv["path"], "out.log"), "a", encoding="utf-8") as rf:
+                rf.write("\n🛠️ إصلاح تلقائي: " + ", ".join(repaired) + "\n")
+        except Exception:
+            pass
+    main_file = srv.get("startup_file", "")
+
+    if not main_file:
+        main_file = detect_main_file(srv["path"], server_type)
+        if main_file:
+            srv["startup_file"] = main_file
+            save_db(db)
+        else:
+            if server_type == "Python":
+                return False, "لا يوجد ملف تشغيل Python (.py)"
+            elif server_type == "PHP":
+                return False, "لا يوجد ملف تشغيل PHP (.php)"
+            else:
+                return False, "لا يوجد ملف تشغيل Node.js (.js)"
+
+    file_path = os.path.join(srv["path"], main_file)
+    if not os.path.exists(file_path):
+        return False, f"الملف '{main_file}' غير موجود"
+
+    port = srv.get("port") or get_assigned_port()
+    srv["port"] = port
+    save_db(db)
+
+    log_path = os.path.join(srv["path"], "out.log")
+    error_path = os.path.join(srv["path"], "errors.log")
+    log_file = open(log_path, "a", encoding='utf-8')
+    log_file.write(
+        f"\n{'='*50}\n🚀 بدء التشغيل - {datetime.now()}\n"
+        f"📁 {main_file}\n🔌 المنفذ: {port}\n🏷 النوع: {server_type}\n{'='*50}\n\n"
+    )
+    log_file.flush()
+
+    try:
+        env = os.environ.copy()
+        env["PORT"] = str(port)
+        env["SERVER_PORT"] = str(port)
+        
+        if server_type == "Node.js":
+            cmd = ["node", main_file]
+        elif server_type == "PHP":
+            cmd = ["php", "-S", f"0.0.0.0:{port}", "-t", srv["path"]]
+        else:
+            # قبل تشغيل Python: إنشاء البيئة الخاصة وتثبيت المكتبات تلقائياً.
+            with open(log_path, "a", encoding="utf-8") as dep_log:
+                python_bin = ensure_python_environment(srv["path"], dep_log)
+            cmd = [python_bin, "-u", main_file]
+            
+        proc = subprocess.Popen(
+            cmd,
+            cwd=srv["path"],
+            stdout=log_file,
+            stderr=open(error_path, "a", encoding='utf-8'),
+            env=env,
+            preexec_fn=os.setsid if hasattr(os, 'setsid') else None
+        )
+        srv["status"] = "Running"
+        srv["pid"] = proc.pid
+        srv["start_time"] = time.time()
+        save_db(db)
+        return True, "✅ تم التشغيل"
+    except FileNotFoundError:
+        err = f"❌ المشغّل غير موجود: {'node' if server_type == 'Node.js' else 'php' if server_type == 'PHP' else 'python'}"
+        log_file.write(err + "\n")
+        log_file.close()
+        return False, err
+    except Exception as e:
+        log_file.write(f"\n❌ خطأ: {e}\n")
+        log_file.close()
+        return False, str(e)
 
 def stop_server_process(folder):
     srv = db["servers"].get(folder)
@@ -760,7 +675,7 @@ def process_monitor():
     while True:
         try:
             for folder, srv in list(db["servers"].items()):
-                if srv.get("type") != "Static" and srv.get("status") == "Running" and srv.get("pid"):
+                if srv.get("status") == "Running" and srv.get("pid"):
                     try:
                         p = psutil.Process(srv["pid"])
                         if not p.is_running() or p.status() == psutil.STATUS_ZOMBIE:
@@ -1308,98 +1223,6 @@ def ping():
     return jsonify({"status": "pong", "timestamp": str(datetime.now())})
 
 # ============== السيرفرات ==============
-
-# ============== زر فتح السيرفر: بوت تليجرام أو موقع ==============
-def find_telegram_bot_token(srv_path: str):
-    """يبحث عن توكن بوت تليجرام داخل ملفات السيرفر بدون تغيير الملفات."""
-    token_re = re.compile(r'(?<![A-Za-z0-9:_-])\d{6,12}:[A-Za-z0-9_-]{30,50}(?![A-Za-z0-9_-])')
-    skip_ext = {'.png', '.jpg', '.jpeg', '.gif', '.webp', '.zip', '.pyc', '.db', '.sqlite', '.sqlite3'}
-    try:
-        for root, dirs, files in os.walk(srv_path):
-            dirs[:] = [d for d in dirs if d not in {'.venv', 'venv', 'node_modules', '__pycache__'}]
-            for filename in files:
-                if os.path.splitext(filename)[1].lower() in skip_ext:
-                    continue
-                path = os.path.join(root, filename)
-                try:
-                    if os.path.getsize(path) > 2 * 1024 * 1024:
-                        continue
-                    with open(path, 'r', encoding='utf-8', errors='ignore') as fh:
-                        text = fh.read()
-                    match = token_re.search(text)
-                    if match:
-                        return match.group(0)
-                except Exception:
-                    continue
-    except Exception:
-        pass
-    return None
-
-def get_server_open_url(folder: str, srv: dict):
-    token=find_telegram_bot_token(srv.get('path',''))
-    if token:
-        try:
-            tg=requests.get(f'https://api.telegram.org/bot{token}/getMe',timeout=8).json(); username=(tg.get('result') or {}).get('username')
-            if username: return {'kind':'telegram','url':f'https://t.me/{username}','label':'فتح'}
-        except Exception: pass
-    return {'kind':'website','url':f"{request.host_url.rstrip('/')}/site/{quote(folder,safe='')}/",'label':'فتح'}
-
-@app.route('/api/server/open/<folder>')
-def server_open(folder):
-    if 'username' not in session: return jsonify({'success':False,'message':'غير مصرح'}),401
-    srv=db['servers'].get(folder)
-    if not srv or srv.get('owner')!=session['username']: return jsonify({'success':False,'message':'غير مصرح'}),403
-    return jsonify({'success':True,**get_server_open_url(folder,srv)})
-
-def _rewrite_site_html(html,prefix):
-    # Root-relative attributes
-    pat=r'(?P<a>(?:href|src|action|poster|data-src|data-href)\s*=\s*["\'])/(?P<p>(?!/)[^"\']*)'
-    html=re.sub(pat,lambda m:m.group('a')+prefix+'/'+m.group('p'),html,flags=re.I)
-    html=re.sub(r'url\(\s*(["\']?)/(?!/)',lambda m:'url('+m.group(1)+prefix+'/',html,flags=re.I)
-    p=json.dumps(prefix)
-    bridge="""<script>(function(){const P=%s;function R(u){try{if(typeof u!=='string')return u;if(u[0]=='/'&&u.slice(0,2)!=='//'&&!u.startsWith(P+'/'))return P+u}catch(e){}return u}const F=window.fetch;window.fetch=function(i,o){if(typeof i==='string')i=R(i);return F.call(this,i,o)};const O=XMLHttpRequest.prototype.open;XMLHttpRequest.prototype.open=function(m,u){arguments[1]=R(u);return O.apply(this,arguments)};})();</script>""" % p
-    low=html.lower(); idx=low.find('</head>')
-    return html[:idx]+bridge+html[idx:] if idx>=0 else bridge+html
-
-def _proxy_headers(upstream,prefix):
-    out=[]
-    for k,v in upstream.headers.items():
-        kl=k.lower()
-        if kl in {'content-encoding','content-length','transfer-encoding','connection'}: continue
-        if kl=='location' and v.startswith('/') and not v.startswith(prefix+'/'): v=prefix+v
-        if kl=='set-cookie': v=re.sub(r'(?i)(?:;\s*)?Path=/', '; Path='+prefix+'/', v)
-        out.append((k,v))
-    return out
-
-@app.route('/site/<folder>/',defaults={'subpath':''},methods=['GET','POST','PUT','PATCH','DELETE','OPTIONS','HEAD'])
-@app.route('/site/<folder>/<path:subpath>',methods=['GET','POST','PUT','PATCH','DELETE','OPTIONS','HEAD'])
-def proxy_user_site(folder,subpath):
-    folder=unquote(folder); srv=db['servers'].get(folder)
-    if not srv: return 'الموقع غير موجود',404
-    if srv.get('owner')!=session.get('username'): return 'غير مصرح',403
-    prefix='/site/'+quote(folder,safe='')
-    if srv.get('type')=='Static':
-        base=os.path.abspath(srv.get('path','')); rel=subpath or srv.get('startup_file') or 'index.html'; target=safe_relative_path(base,rel)
-        if not target or not os.path.isfile(target): return 'الملف غير موجود',404
-        try:
-            from mimetypes import guess_type; ctype=guess_type(target)[0] or ''
-            if 'text/html' in ctype:
-                html=open(target,'r',encoding='utf-8',errors='ignore').read(); return Response(_rewrite_site_html(html,prefix),content_type='text/html; charset=utf-8')
-        except Exception: pass
-        return send_file(target)
-    if srv.get('status') not in ('Running','Starting'): return 'الموقع متوقف حالياً. شغّل السيرفر ثم اضغط فتح مرة أخرى.',503
-    port=srv.get('port')
-    if not port: return 'لم يتم اكتشاف منفذ HTTP لهذا المشروع. إذا كان المشروع بوتاً فقط فلا يوجد موقع لفتحه.',503
-    target_path='/'+subpath
-    if request.query_string: target_path+='?'+request.query_string.decode('utf-8',errors='ignore')
-    try:
-        upstream=requests.request(request.method,f'http://127.0.0.1:{int(port)}{target_path}',headers={k:v for k,v in request.headers.items() if k.lower() not in {'host','content-length'}},data=request.get_data(),cookies=request.cookies,allow_redirects=False,timeout=45,stream=True)
-        headers=_proxy_headers(upstream,prefix); ctype=upstream.headers.get('Content-Type','')
-        if 'text/html' in ctype:
-            raw=upstream.content.decode(upstream.encoding or 'utf-8',errors='replace'); return Response(_rewrite_site_html(raw,prefix),status=upstream.status_code,headers=headers,content_type='text/html; charset=utf-8')
-        return Response(upstream.iter_content(chunk_size=8192),status=upstream.status_code,headers=headers)
-    except Exception as e: return f'تعذر فتح الموقع: {e}',502
-
 @app.route('/api/servers')
 def list_servers():
     if "username" not in session:
@@ -1435,9 +1258,7 @@ def list_servers():
                 "storage_limit": srv.get("storage_limit", 100),
                 "ram_limit": srv.get("ram_limit", 256),
                 "cpu_limit": srv.get("cpu_limit", 0.5),
-                "disk_used": disk_used_mb,
-                "can_open": bool(srv.get("port")),
-                "open_kind": "telegram" if find_telegram_bot_token(srv.get("path", "")) else "website"
+                "disk_used": disk_used_mb
             })
     user = db["users"].get(session["username"], {})
     return jsonify({
@@ -1526,6 +1347,46 @@ def server_action(folder, action):
         return jsonify({"success": True, "message": "🗑 تم الحذف"})
     return jsonify({"success": False})
 
+@app.route('/api/server/rename/<folder>', methods=['POST'])
+def rename_server(folder):
+    """تعديل اسم الخادم الظاهر فقط؛ لا يغير folder/path أو أي ملف."""
+    if "username" not in session:
+        return jsonify({"success": False, "message": "غير مصرح"}), 401
+    srv = db["servers"].get(folder)
+    if not srv or srv.get("owner") != session["username"]:
+        return jsonify({"success": False, "message": "الخادم غير موجود أو غير مصرح"}), 404
+    data = request.get_json(silent=True) or {}
+    name = unicodedata.normalize('NFC', str(data.get("name", "")).strip())
+    if not name:
+        return jsonify({"success": False, "message": "أدخل اسماً جديداً"}), 400
+    if len(name) > 100:
+        return jsonify({"success": False, "message": "اسم الخادم طويل جداً (الحد 100 حرف)"}), 400
+    old_name = srv.get("name", "")
+    srv["name"] = name
+    if not save_db(db):
+        srv["name"] = old_name
+        return jsonify({"success": False, "message": "تعذر حفظ الاسم"}), 500
+    return jsonify({
+        "success": True,
+        "message": "✅ تم تعديل اسم الخادم بدون تغيير الملفات أو المسار",
+        "name": name,
+        "folder": folder,
+        "path": srv.get("path")
+    })
+
+@app.route('/api/server/repair/<folder>', methods=['POST'])
+def repair_server(folder):
+    """إصلاح آمن يدوي/تلقائي للملفات الأساسية المفقودة."""
+    if "username" not in session:
+        return jsonify({"success": False, "message": "غير مصرح"}), 401
+    srv = db["servers"].get(folder)
+    if not srv or srv.get("owner") != session["username"]:
+        return jsonify({"success": False, "message": "الخادم غير موجود أو غير مصرح"}), 404
+    auto_detect_server_type(srv["path"], srv)
+    repaired, warnings = repair_server_environment(srv["path"], srv.get("type", "Python"))
+    save_db(db)
+    return jsonify({"success": True, "repaired": repaired, "warnings": warnings, "message": "✅ اكتمل الفحص والإصلاح التلقائي" if not warnings else "⚠️ اكتمل الإصلاح مع تحذيرات"})
+
 @app.route('/api/server/stats/<folder>')
 def get_server_stats(folder):
     if "username" not in session:
@@ -1579,40 +1440,32 @@ def list_server_files(folder):
         return jsonify([]), 401
     srv = db["servers"].get(folder)
     if not srv or srv["owner"] != session["username"]:
-        return jsonify([]), 403
-    base = os.path.abspath(srv["path"])
+        return jsonify([])
+    path = srv["path"]
     files = []
     try:
-        for root, dirs, names in os.walk(base):
-            dirs[:] = [d for d in dirs if d not in ['__pycache__', '.git', '.venv', 'venv']]
-            rel_root = os.path.relpath(root, base)
-            rel_root = '' if rel_root == '.' else rel_root.replace(os.sep, '/')
-            for name in dirs + names:
-                if name in ['out.log', 'server.log', 'meta.json', 'errors.log']:
-                    continue
-                full = os.path.join(root, name)
-                rel = os.path.join(rel_root, name).replace(os.sep, '/') if rel_root else name
-                try:
-                    stat = os.stat(full)
-                    size_bytes = stat.st_size if os.path.isfile(full) else 0
-                    if size_bytes < 1024:
-                        size_str = f"{size_bytes} B"
-                    elif size_bytes < 1024 * 1024:
-                        size_str = f"{size_bytes/1024:.1f} KB"
-                    else:
-                        size_str = f"{size_bytes/(1024*1024):.1f} MB"
-                    files.append({
-                        "name": rel,
-                        "size": size_str,
-                        "is_dir": os.path.isdir(full),
-                        "modified": datetime.fromtimestamp(stat.st_mtime).strftime('%Y-%m-%d %H:%M'),
-                        "is_zip": rel.lower().endswith('.zip')
-                    })
-                except OSError:
-                    continue
-    except Exception as exc:
-        return jsonify({"success": False, "message": str(exc)}), 500
-    return jsonify(sorted(files, key=lambda x: (x['name'].count('/'), not x['is_dir'], x['name'].lower())))
+        for f in os.listdir(path):
+            if f in ['out.log', 'server.log', 'meta.json', 'errors.log']:
+                continue
+            fpath = os.path.join(path, f)
+            stat = os.stat(fpath)
+            size_bytes = stat.st_size
+            if size_bytes < 1024:
+                size_str = f"{size_bytes} B"
+            elif size_bytes < 1024 * 1024:
+                size_str = f"{size_bytes/1024:.1f} KB"
+            else:
+                size_str = f"{size_bytes/(1024*1024):.1f} MB"
+            files.append({
+                "name": f,
+                "size": size_str,
+                "is_dir": os.path.isdir(fpath),
+                "modified": datetime.fromtimestamp(stat.st_mtime).strftime('%Y-%m-%d %H:%M'),
+                "is_zip": f.lower().endswith('.zip')
+            })
+    except Exception:
+        pass
+    return jsonify(sorted(files, key=lambda x: (not x['is_dir'], x['name'].lower())))
 
 @app.route('/api/files/download/<folder>/<path:filename>')
 def download_user_file(folder, filename):
@@ -1621,8 +1474,11 @@ def download_user_file(folder, filename):
     srv = db["servers"].get(folder)
     if not srv or srv.get("owner") != session["username"]:
         return jsonify({"success": False, "message": "غير مصرح"}), 403
-    fpath = safe_relative_path(srv["path"], filename)
-    if not fpath or not os.path.isfile(fpath):
+    filename = safe_user_filename(filename)
+    if not filename:
+        return jsonify({"success": False, "message": "اسم ملف غير صالح"}), 400
+    fpath = os.path.join(srv["path"], filename)
+    if not os.path.isfile(fpath):
         return jsonify({"success": False, "message": "الملف غير موجود"}), 404
     return send_file(fpath, as_attachment=True, download_name=os.path.basename(fpath))
 
@@ -1632,10 +1488,12 @@ def get_file_content(folder, filename):
         return jsonify({"content": ""}), 401
     srv = db["servers"].get(folder)
     if not srv or srv["owner"] != session["username"]:
-        return jsonify({"content": ""}), 403
-    fpath = safe_relative_path(srv["path"], filename)
-    if not fpath or not os.path.isfile(fpath):
-        return jsonify({"content": "", "message": "الملف غير موجود"}), 404
+        return jsonify({"content": ""})
+    if '..' in filename:
+        return jsonify({"content": ""})
+    fpath = os.path.join(srv["path"], filename)
+    if not os.path.exists(fpath) or os.path.isdir(fpath):
+        return jsonify({"content": ""})
     try:
         with open(fpath, 'r', encoding='utf-8', errors='replace') as f:
             return jsonify({"content": f.read()})
@@ -1645,20 +1503,20 @@ def get_file_content(folder, filename):
 @app.route('/api/files/save/<folder>/<path:filename>', methods=['POST'])
 def save_file_content(folder, filename):
     if "username" not in session:
-        return jsonify({"success": False, "message": "غير مصرح"}), 401
+        return jsonify({"success": False}), 401
     srv = db["servers"].get(folder)
     if not srv or srv["owner"] != session["username"]:
-        return jsonify({"success": False, "message": "غير مصرح"}), 403
-    fpath = safe_relative_path(srv["path"], filename)
-    if not fpath or not os.path.isfile(fpath):
-        return jsonify({"success": False, "message": "الملف غير موجود"}), 404
-    data = request.get_json(silent=True) or {}
+        return jsonify({"success": False})
+    if '..' in filename:
+        return jsonify({"success": False, "message": "اسم غير صالح"})
+    data = request.get_json()
+    fpath = os.path.join(srv["path"], filename)
     try:
         with open(fpath, 'w', encoding='utf-8') as f:
             f.write(data.get("content", ""))
         return jsonify({"success": True, "message": "✅ تم الحفظ"})
     except Exception as e:
-        return jsonify({"success": False, "message": str(e)}), 500
+        return jsonify({"success": False, "message": str(e)})
 
 @app.route('/api/files/upload/<folder>', methods=['POST'])
 def upload_files(folder):
@@ -1731,23 +1589,6 @@ def _auto_install_after_upload(srv_path: str, server_type: str, log_path: str):
             pass
 
 
-def normalize_extracted_project(path):
-    """إذا كان ZIP يحتوي مجلد مشروع واحد، نرفع محتواه إلى جذر السيرفر حتى تعمل المسارات."""
-    try:
-        entries=[e for e in os.listdir(path) if e not in {'out.log','errors.log'}]
-        meaningful=[e for e in entries if not e.lower().endswith('.zip')]
-        if len(meaningful)==1 and os.path.isdir(os.path.join(path,meaningful[0])):
-            nested=os.path.join(path,meaningful[0])
-            for item in os.listdir(nested):
-                src=os.path.join(nested,item); dst=os.path.join(path,item)
-                if os.path.exists(dst):
-                    if os.path.isdir(src) and os.path.isdir(dst): shutil.copytree(src,dst,dirs_exist_ok=True); shutil.rmtree(src,ignore_errors=True)
-                    else: continue
-                else: shutil.move(src,dst)
-            shutil.rmtree(nested,ignore_errors=True)
-    except Exception:
-        pass
-
 @app.route('/api/server/auto-upload', methods=['POST'])
 def auto_create_server_from_upload():
     """رفع ملف مباشرة من لوحة المستخدم وإنشاء السيرفر تلقائياً."""
@@ -1771,16 +1612,16 @@ def auto_create_server_from_upload():
         return jsonify({"success": False, "message": "اسم الملف غير صالح"})
 
     ext = os.path.splitext(filename)[1].lower()
-    if ext == '.py': server_type='Python'
-    elif ext in ('.js','.mjs','.cjs'): server_type='Node.js'
-    elif ext == '.php': server_type='PHP'
-    elif ext == '.rb': server_type='Ruby'
-    elif ext == '.java': server_type='Java'
-    elif ext == '.go': server_type='Go'
-    elif ext == '.rs': server_type='Rust'
-    elif ext in ('.html','.htm'): server_type='Static'
-    elif ext == '.zip': server_type='Python'
-    else: return jsonify({"success":False,"message":"ارفع مشروع ويب أو ZIP أو Python/Node/PHP/Ruby/Java/Go/Rust/HTML"})
+    if ext == '.py':
+        server_type = "Python"
+    elif ext == '.js':
+        server_type = "Node.js"
+    elif ext == '.php':
+        server_type = "PHP"
+    elif ext == '.zip':
+        server_type = "Python"
+    else:
+        return jsonify({"success": False, "message": "ارفع ملف Python أو ZIP أو JavaScript أو PHP"})
 
     base_name = os.path.splitext(filename)[0]
     safe_name = re.sub(r'[^a-zA-Z0-9_-]+', '', base_name) or "my-server"
@@ -1792,7 +1633,7 @@ def auto_create_server_from_upload():
     plan_id = user.get("plan", "free")
     plan = db["plans"].get(plan_id, db["plans"]["free"])
     assigned_port = get_assigned_port()
-    startup_file = filename if ext in {'.py','.js','.mjs','.cjs','.php','.rb','.java','.go','.rs','.html','.htm'} else ""
+    startup_file = filename if ext in {'.py', '.js', '.php'} else ""
 
     try:
         f.save(os.path.join(path, filename))
@@ -1802,9 +1643,13 @@ def auto_create_server_from_upload():
                 if zf.testzip():
                     raise ValueError("ملف ZIP تالف")
                 zf.extractall(path)
-            normalize_extracted_project(path)
             # تحديد نوع المشروع وملف التشغيل من المحتوى بعد فك الضغط.
-            server_type = detect_project_type(path)
+            if os.path.exists(os.path.join(path, "package.json")) or any(name.endswith('.js') for name in os.listdir(path)):
+                server_type = "Node.js"
+            elif any(name.endswith('.php') for name in os.listdir(path)):
+                server_type = "PHP"
+            else:
+                server_type = "Python"
             startup_file = detect_main_file(path, server_type)
 
         db["servers"][folder] = {
@@ -1852,11 +1697,9 @@ def replace_file(folder, filename):
     srv = db["servers"].get(folder)
     if not srv or srv["owner"] != session["username"]:
         return jsonify({"success": False, "message": "غير مصرح"}), 403
-    if not filename or filename.startswith('/'):
+    if not filename or '..' in filename or filename.startswith('/'):
         return jsonify({"success": False, "message": "اسم ملف غير صالح"}), 400
-    target = safe_relative_path(srv["path"], filename)
-    if not target:
-        return jsonify({"success": False, "message": "اسم ملف غير صالح"}), 400
+    target = os.path.join(srv["path"], filename)
     if os.path.isdir(target):
         return jsonify({"success": False, "message": "لا يمكن استبدال مجلد"}), 400
     if not os.path.exists(target):
@@ -1905,12 +1748,10 @@ def rename_file(folder):
     data = request.get_json() or {}
     old_name = data.get("old_name", "").strip()
     new_name = safe_user_filename(data.get("new_name", "").strip())
-    if not old_name or not new_name:
+    if not old_name or not new_name or '..' in old_name:
         return jsonify({"success": False, "message": "اسم غير صالح"})
-    old_path = safe_relative_path(srv["path"], old_name)
-    new_path = safe_relative_path(os.path.dirname(old_path) if old_path else srv["path"], new_name) if old_path else None
-    if not old_path or not new_path:
-        return jsonify({"success": False, "message": "اسم غير صالح"})
+    old_path = os.path.join(srv["path"], old_name)
+    new_path = os.path.join(srv["path"], new_name)
     if not os.path.exists(old_path):
         return jsonify({"success": False, "message": "الملف غير موجود"})
     if os.path.exists(new_path):
@@ -1933,9 +1774,7 @@ def unzip_file(folder, filename):
         return jsonify({"success": False})
     if not filename.lower().endswith('.zip'):
         return jsonify({"success": False, "message": "الملف ليس zip"})
-    zip_path = safe_relative_path(srv["path"], filename)
-    if not zip_path:
-        return jsonify({"success": False, "message": "اسم ملف غير صالح"})
+    zip_path = os.path.join(srv["path"], filename)
     if not os.path.exists(zip_path):
         return jsonify({"success": False, "message": "الملف غير موجود"})
     try:
@@ -1943,13 +1782,7 @@ def unzip_file(folder, filename):
             bad = zf.testzip()
             if bad:
                 return jsonify({"success": False, "message": f"ملف ZIP تالف: {bad}"})
-            base = os.path.abspath(srv["path"])
-            for member in zf.infolist():
-                member_name = member.filename.replace('\\', '/')
-                dest = os.path.abspath(os.path.join(base, member_name))
-                if os.path.commonpath([base, dest]) != base:
-                    return jsonify({"success": False, "message": "ZIP يحتوي مساراً غير آمن"}), 400
-            zf.extractall(base)
+            zf.extractall(srv["path"])
         # كشف تلقائي بعد فك الضغط + حفظ
         auto_detect_server_type(srv["path"], srv)
         save_db(db)
@@ -1974,9 +1807,7 @@ def delete_files(folder):
     for name in names:
         if not name or '..' in name:
             continue
-        fpath = safe_relative_path(srv["path"], name)
-        if not fpath:
-            continue
+        fpath = os.path.join(srv["path"], name)
         try:
             if os.path.isdir(fpath):
                 shutil.rmtree(fpath)
@@ -1991,37 +1822,6 @@ def delete_files(folder):
         save_db(db)
         return jsonify({"success": True, "message": f"🗑 تم حذف {deleted} ملف"})
     return jsonify({"success": False, "message": "فشل الحذف"})
-
-@app.route('/api/files/delete-all/<folder>', methods=['POST'])
-def delete_all_files(folder):
-    if 'username' not in session: return jsonify({'success':False,'message':'غير مصرح'}),401
-    srv=db['servers'].get(folder)
-    if not srv or srv.get('owner')!=session['username']: return jsonify({'success':False,'message':'غير مصرح'}),403
-    base=os.path.abspath(srv.get('path',''))
-    if not os.path.isdir(base): return jsonify({'success':False,'message':'مجلد السيرفر غير موجود'}),404
-    stop_server_process(folder); deleted=0
-    try:
-        for name in os.listdir(base):
-            target=os.path.join(base,name)
-            try:
-                if os.path.isdir(target) and not os.path.islink(target): shutil.rmtree(target)
-                else: os.remove(target)
-                deleted+=1
-            except Exception: pass
-        srv.update(startup_file='',status='Stopped',pid=None,port=get_assigned_port()); save_db(db)
-        return jsonify({'success':True,'message':f'🗑 تم حذف كل الملفات والمجلدات ({deleted})'})
-    except Exception as e: return jsonify({'success':False,'message':f'فشل حذف الكل: {e}'}),500
-
-@app.route('/api/files/create-folder/<folder>', methods=['POST'])
-def create_folder_api(folder):
-    if 'username' not in session: return jsonify({'success':False,'message':'غير مصرح'}),401
-    srv=db['servers'].get(folder)
-    if not srv or srv.get('owner')!=session['username']: return jsonify({'success':False,'message':'غير مصرح'}),403
-    data=request.get_json() or {}; name=safe_relative_path(srv['path'],data.get('filename','').strip())
-    if not name: return jsonify({'success':False,'message':'اسم المجلد غير صالح'}),400
-    if os.path.exists(name): return jsonify({'success':False,'message':'المجلد موجود مسبقاً'}),409
-    try: os.makedirs(name); return jsonify({'success':True,'message':'📁 تم إنشاء المجلد'})
-    except Exception as e: return jsonify({'success':False,'message':str(e)}),500
 
 @app.route('/api/files/create/<folder>', methods=['POST'])
 def create_file_api(folder):
