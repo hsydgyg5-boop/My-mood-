@@ -1624,6 +1624,54 @@ def auto_create_server_from_upload():
         shutil.rmtree(path, ignore_errors=True)
         return jsonify({"success": False, "message": f"فشل إنشاء السيرفر: {e}"}), 500
 
+@app.route('/api/server/auto-repair/<folder>', methods=['POST'])
+def auto_repair_server(folder):
+    """Repair missing runtime essentials without overwriting user files."""
+    if "username" not in session:
+        return jsonify({"success": False, "message": "غير مصرح"}), 401
+    srv = db["servers"].get(folder)
+    if not srv or srv.get("owner") != session["username"]:
+        return jsonify({"success": False, "message": "غير مصرح"}), 403
+    base = os.path.abspath(srv.get("path", ""))
+    if not base or not os.path.isdir(base):
+        return jsonify({"success": False, "message": "مجلد الخادم غير موجود"}), 404
+    created = []
+    fixed = []
+    try:
+        # Never overwrite existing user files.
+        typ = auto_detect_server_type(base, srv) or srv.get("type", "Python")
+        srv["type"] = typ
+        startup = srv.get("startup_file") or detect_main_file(base, typ)
+        if startup and os.path.isfile(os.path.join(base, startup)):
+            srv["startup_file"] = startup
+        if typ == "PHP":
+            index = os.path.join(base, "index.php")
+            if not os.path.exists(index):
+                Path(index).write_text("<?php\nheader('Content-Type: text/html; charset=UTF-8');\necho 'PHP server is ready.';\n", encoding="utf-8")
+                created.append("index.php")
+            ht = os.path.join(base, ".htaccess")
+            if not os.path.exists(ht):
+                Path(ht).write_text("DirectoryIndex index.php index.html\nRewriteEngine On\n", encoding="utf-8")
+                created.append(".htaccess")
+        elif typ == "Python":
+            req = os.path.join(base, "requirements.txt")
+            if not os.path.exists(req):
+                Path(req).write_text("Flask>=3.0\n", encoding="utf-8")
+                created.append("requirements.txt")
+            if not srv.get("startup_file"):
+                candidates = ["app.py", "main.py", "server.py", "run.py"]
+                for c in candidates:
+                    if os.path.isfile(os.path.join(base, c)):
+                        srv["startup_file"] = c; break
+        log_path = os.path.join(base, "out.log")
+        Path(log_path).touch(exist_ok=True)
+        fixed.append("صلاحيات/ملفات التشغيل تم فحصها")
+        auto_detect_server_type(base, srv)
+        save_db(db)
+        return jsonify({"success": True, "message": "✅ تم الإصلاح التلقائي بدون استبدال ملفاتك", "created": created, "fixed": fixed, "type": srv.get("type"), "startup_file": srv.get("startup_file")})
+    except Exception as e:
+        return jsonify({"success": False, "message": f"فشل الإصلاح التلقائي: {e}"}), 500
+
 @app.route('/api/files/replace/<folder>/<path:filename>', methods=['POST'])
 def replace_file(folder, filename):
     """استبدال ملف موجود مباشرة بدون حذفه أولاً."""
@@ -1634,7 +1682,9 @@ def replace_file(folder, filename):
         return jsonify({"success": False, "message": "غير مصرح"}), 403
     if not filename or '..' in filename or filename.startswith('/'):
         return jsonify({"success": False, "message": "اسم ملف غير صالح"}), 400
-    target = os.path.join(srv["path"], filename)
+    target = safe_server_path(srv["path"], filename, allow_dir=False)
+    if not target:
+        return jsonify({"success": False, "message": "مسار الملف غير صالح"}), 400
     if os.path.isdir(target):
         return jsonify({"success": False, "message": "لا يمكن استبدال مجلد"}), 400
     if not os.path.exists(target):

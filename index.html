@@ -641,7 +641,15 @@
         .file-actions{display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-start;direction:rtl}
         .file-actions .file-btn{min-height:32px;transition:.18s;border:1px solid rgba(255,255,255,.08);box-shadow:0 3px 10px rgba(0,0,0,.12)}
         .file-actions .file-btn:hover{transform:translateY(-1px);filter:brightness(1.12)}
-        .file-btn.extract{background:rgba(255,174,0,.16)!important;color:#ffc44d!important;border-color:rgba(255,174,0,.35)!important}
+        .file-btn{border:1px solid rgba(255,255,255,.12);border-radius:10px;padding:7px 10px;margin:3px 2px;font-weight:700;cursor:pointer;transition:.18s;box-shadow:0 2px 8px rgba(0,0,0,.12)}
+.file-btn:hover{transform:translateY(-1px);filter:brightness(1.12);box-shadow:0 5px 14px rgba(0,0,0,.2)}
+.file-btn.edit{background:rgba(157,92,255,.16)!important;color:#c49aff!important;border-color:rgba(157,92,255,.35)!important}
+.file-btn.download{background:rgba(0,196,140,.16)!important;color:#55e5b7!important;border-color:rgba(0,196,140,.35)!important}
+.file-btn.rename{background:rgba(255,196,64,.16)!important;color:#ffd46a!important;border-color:rgba(255,196,64,.35)!important}
+.file-btn.delete{background:rgba(255,71,105,.16)!important;color:#ff7894!important;border-color:rgba(255,71,105,.35)!important}
+.file-btn.repair{background:linear-gradient(135deg,rgba(0,200,255,.2),rgba(0,255,160,.15))!important;color:#7feeff!important;border-color:rgba(0,220,255,.35)!important}
+.file-actions{display:flex;flex-wrap:wrap;gap:4px;align-items:center}
+.file-btn.extract{background:rgba(255,174,0,.16)!important;color:#ffc44d!important;border-color:rgba(255,174,0,.35)!important}
         .file-btn.rename{background:rgba(145,105,255,.18)!important;color:#c4b1ff!important;border-color:rgba(145,105,255,.35)!important}
         .file-btn.download{background:rgba(0,210,150,.16)!important;color:#39e0ad!important;border-color:rgba(0,210,150,.35)!important}
         .file-btn.replace{background:rgba(45,122,255,.16)!important;color:#76b0ff!important;border-color:rgba(45,122,255,.35)!important}
@@ -956,7 +964,7 @@
                 <button class="glow-btn" onclick="installPackages()" style="background:#2d7aff;"><i class="fas fa-cube"></i> تثبيت المكتبات</button>
                 <button class="glow-btn" onclick="showCreateFolderModal()" style="background:#2d7aff;"><i class="fas fa-folder-plus"></i> مجلد جديد</button>
             </div>
-            <div style="display:flex;gap:8px;flex-wrap:wrap;margin:10px 0 14px;direction:rtl"><button class="file-btn delete" onclick="deleteAllFiles()">🗑️ حذف جميع الملفات</button><button class="file-btn download" onclick="loadFiles()">🔄 تحديث الملفات</button></div><table class="files-table"><thead><tr><th></th><th>الاسم</th><th>الحجم</th><th></th></tr></thead><tbody id="filesList"></tbody></table>
+            <div style="display:flex;gap:8px;flex-wrap:wrap;margin:10px 0 14px;direction:rtl"><button class="file-btn delete" onclick="deleteAllFiles()">🗑️ حذف جميع الملفات</button><button class="file-btn repair" onclick="autoRepairServer()">🛠️ إصلاح تلقائي</button><button class="file-btn download" onclick="loadFiles()">🔄 تحديث الملفات</button></div><table class="files-table"><thead><tr><th></th><th>الاسم</th><th>الحجم</th><th></th></tr></thead><tbody id="filesList"></tbody></table>
         </div>
         <div id="statsPane" class="tab-pane">
             <div class="stats-details">
@@ -1480,7 +1488,7 @@
                 const n=JSON.stringify(f.name);
                 const actions=f.is_dir
                   ? `<button class="file-btn rename" onclick="openRenameModal(${n})">✏️ تغيير الاسم</button><button class="file-btn delete" onclick="deleteFile(${n})">🗑️ حذف المجلد</button>`
-                  : `<button class="file-btn edit" onclick="editFile(${n})">📝 تعديل</button>${f.is_zip?`<button class="file-btn extract" onclick="unzipFile(${n})">📦 فك الضغط</button>`:''}<button class="file-btn replace" onclick="replaceFile(${n})">🔄 استبدال الملف</button><button class="file-btn download" onclick="downloadFile(${n})">⬇️ تحميل</button><button class="file-btn rename" onclick="openRenameModal(${n})">✏️ تغيير الاسم</button><button class="file-btn delete" onclick="deleteFile(${n})">🗑️ حذف الملف</button>`;
+                  : `${f.is_zip?`<button class="file-btn extract" onclick="unzipFile(${n})">📦 فك الضغط</button>`:''}<button class="file-btn replace" onclick="replaceFile(${n})">🔄 استبدال الملف</button><button class="file-btn rename" onclick="openRenameModal(${n})">✏️ تغيير الاسم</button><button class="file-btn download" onclick="downloadFile(${n})">⬇️ تحميل</button><button class="file-btn edit" onclick="editFile(${n})">📝 تعديل</button><button class="file-btn delete" onclick="deleteFile(${n})">🗑️ حذف الملف</button>`;
                 return `<tr><td><input type="checkbox" class="file-checkbox" value="${escapeHtml(f.name)}"></td><td><i class="fas ${f.is_dir?'fa-folder':'fa-file'}"></i> ${escapeHtml(f.name)}</td><td>${f.size}</td><td class="file-actions">${actions}</td></tr>`;
             }).join('');
         }catch(e){console.error(e);tbody.innerHTML='<tr><td colspan="4" style="color:#ff6b87">❌ فشل تحميل الملفات</td></tr>';}
@@ -1624,6 +1632,17 @@
         const d = await r.json();
         if(!d.success){ showToast(d.message || 'فشل إنشاء المجلد', 'error'); return; }
         closeCreateFolderModal(); loadFiles(); 
+    }
+
+    async function autoRepairServer(){
+        if(!currentServer) return;
+        showToast('🛠️ جاري فحص وإصلاح الخادم...','info');
+        try{
+            const r=await fetch(`/api/server/auto-repair/${encodeURIComponent(currentServer.folder)}`,{method:'POST',headers:{'Content-Type':'application/json'}});
+            const d=await r.json();
+            showToast(d.message||'تم الإصلاح',d.success?'success':'error');
+            if(d.success){ loadFiles(); loadStartupFiles(); }
+        }catch(e){ showToast('❌ تعذر الاتصال بخدمة الإصلاح','error'); }
     }
 
     async function unzipFile(name){
