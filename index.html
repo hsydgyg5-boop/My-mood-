@@ -943,7 +943,7 @@
                 <button class="create-server-btn" style="background:linear-gradient(135deg,#7c3aed,#a855f7);" onclick="document.getElementById('autoServerUpload').click()">
                     <i class="fas fa-cloud-arrow-up"></i> رفع ملف وتشغيله تلقائياً
                 </button>
-                <input type="file" id="autoServerUpload" accept=".py,.zip,.js,.php" style="display:none" onchange="autoCreateServer(this.files[0])">
+                <input type="file" id="autoServerUpload" accept=".py,.zip,.js,.mjs,.cjs,.php,.rb,.java,.go,.rs,.html,.htm" style="display:none" onchange="autoCreateServer(this.files[0])">
             </div>
         </div>
         <div class="servers-grid" id="serversGrid"><div style="text-align:center; padding:60px; color:#9ca3cf;">جاري التحميل...</div></div>
@@ -973,13 +973,14 @@
             <div class="upload-zone" onclick="document.getElementById('fileUpload').click()" ondragover="event.preventDefault()" ondrop="handleDrop(event)">
                 <i class="fas fa-cloud-upload-alt" style="font-size:2rem;color:#2d7aff;display:block;margin-bottom:10px;"></i>
                 <span style="font-size:0.95rem;">اسحب الملفات هنا أو انقر للرفع</span>
-                <div style="font-size:0.72rem;color:#9ca3cf;margin-top:6px;">يدعم: .py, .php, .txt, .json, .env, .zip وغيرها</div>
+                <div style="font-size:0.72rem;color:#9ca3cf;margin-top:6px;">يدعم: Python, Node.js, PHP, Ruby, Java, Go, Rust, HTML/CSS/JS وZIP وغيرها</div>
             </div>
             <input type="file" id="fileUpload" multiple style="display:none" onchange="uploadFiles(this.files)">
             <div style="margin-bottom: 16px; display: flex; gap: 10px; flex-wrap: wrap;">
                 <button class="glow-btn" onclick="showCreateFileModal()" style="background:#2d7aff;"><i class="fas fa-file"></i> ملف جديد</button>
                 <button class="glow-btn" onclick="installPackages()" style="background:#2d7aff;"><i class="fas fa-cube"></i> تثبيت المكتبات</button>
                 <button class="glow-btn" onclick="showCreateFolderModal()" style="background:#2d7aff;"><i class="fas fa-folder-plus"></i> مجلد جديد</button>
+                <button class="glow-btn delete-all-files-btn" onclick="deleteAllFiles()" style="background:linear-gradient(135deg,#d90429,#9d0208);"><i class="fas fa-trash-can"></i> حذف الكل</button>
             </div>
             <div class="files-list-wrap" id="filesList"></div>
         </div>
@@ -1637,6 +1638,19 @@
         } catch(e) { showToast(e.message || 'فشل حذف الملف', 'error'); }
     }
 
+    async function deleteAllFiles() {
+        if (!currentServer) return;
+        const ok = window.confirm('⚠️ سيتم إيقاف السيرفر وحذف جميع الملفات والمجلدات داخله نهائياً. قاعدة البيانات والحساب لن تتأثرا. هل أنت متأكد؟');
+        if (!ok) return;
+        try {
+            showToast('جاري حذف كل الملفات...');
+            const d = await apiJson(`/api/files/delete-all/${encodeURIComponent(currentServer.folder)}`, { method:'POST' });
+            showToast(d.message || 'تم حذف الكل', 'success');
+            await loadFiles();
+            await loadServers();
+        } catch(e) { showToast(e.message || 'فشل حذف الكل', 'error'); }
+    }
+
     async function uploadFiles(files) {
         if(!files.length || !currentServer) return;
         const fd = new FormData();
@@ -1709,7 +1723,7 @@
     async function createFolder() { 
         const name = document.getElementById('newFolderName').value.trim(); 
         if(!name) return; 
-        const r = await fetch(`/api/files/create/${currentServer.folder}`, { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({filename:name, content:''}) });
+        const r = await fetch(`/api/files/create-folder/${encodeURIComponent(currentServer.folder)}`, { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({filename:name}) });
         const d = await r.json();
         if(!d.success){ showToast(d.message || 'فشل إنشاء المجلد', 'error'); return; }
         closeCreateFolderModal(); loadFiles(); 

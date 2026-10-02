@@ -16,9 +16,10 @@ import psutil
 import socket
 import tempfile
 import ast
+import shlex
 import unicodedata
 from datetime import datetime, timedelta
-from flask import Flask, send_from_directory, send_file, request, jsonify, session, redirect, make_response
+from flask import Flask, send_from_directory, send_file, request, jsonify, session, redirect, make_response, Response
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 # التخزين الدائم: نستخدم مسار Railway Volume إذا كان موجوداً.
@@ -387,63 +388,106 @@ def fix_server_types():
 
 fix_server_types()
 
-# ============== المنافذ ==============
-PORT_RANGE_START = 8100
-PORT_RANGE_END = 9100
+# ============== تشغيل شامل واكتشاف المنفذ ==============
+SUPPORTED_SERVER_TYPES = ("Python", "Node.js", "PHP", "Ruby", "Java", "Go", "Rust", "Static")
+COMMON_WEB_PORTS = (3000, 4000, 5000, 5173, 8000, 8001, 8080, 8081, 8088, 8888, 9000)
 
-def get_assigned_port():
-    used = set()
-    for srv in db.get("servers", {}).values():
-        if srv.get("port"):
-            used.add(srv["port"])
-    for port in range(PORT_RANGE_START, PORT_RANGE_END):
-        if port not in used:
-            try:
-                s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                s.settimeout(0.1)
-                result = s.connect_ex(('127.0.0.1', port))
-                s.close()
-                if result != 0:
-                    return port
-            except Exception:
-                return port
-    return PORT_RANGE_START
+def detect_project_type(srv_path: str):
+    try:
+        names = set()
+        for root, dirs, files in os.walk(srv_path):
+            depth = os.path.relpath(root, srv_path).count(os.sep)
+            if depth > 2:
+                dirs[:] = []
+                continue
+            names.update(n.lower() for n in files)
+    except Exception:
+        return "Python"
+    if "package.json" in names or any(n.endswith(('.js','.mjs','.cjs')) for n in names): return "Node.js"
+    if "composer.json" in names or any(n.endswith('.php') for n in names): return "PHP"
+    if "cargo.toml" in names or any(n.endswith('.rs') for n in names): return "Rust"
+    if "go.mod" in names or any(n.endswith('.go') for n in names): return "Go"
+    if any(n in names for n in ('pom.xml','build.gradle','build.gradle.kts')) or any(n.endswith('.java') for n in names): return "Java"
+    if "gemfile" in names or any(n.endswith('.rb') for n in names): return "Ruby"
+    if any(n.endswith(('.html','.htm')) for n in names): return "Static"
+    if any(n.endswith('.py') for n in names): return "Python"
+    return "Python"
 
-# ============== كشف الملف الرئيسي ==============
 def detect_main_file(srv_path: str, server_type: str) -> str:
     if server_type == "Node.js":
-        pkg = os.path.join(srv_path, "package.json")
+        pkg=os.path.join(srv_path,'package.json')
         if os.path.exists(pkg):
             try:
-                with open(pkg, 'r', encoding='utf-8') as f:
-                    data = json.load(f)
-                main = data.get("main", "")
-                if main and os.path.exists(os.path.join(srv_path, main)):
-                    return main
-                scripts = data.get("scripts", {})
-                start_cmd = scripts.get("start", "")
-                m = re.search(r'node\s+(\S+\.js)', start_cmd)
-                if m and os.path.exists(os.path.join(srv_path, m.group(1))):
-                    return m.group(1)
-            except Exception:
-                pass
-        for candidate in ["index.js", "bot.js", "app.js", "main.js", "server.js"]:
-            if os.path.exists(os.path.join(srv_path, candidate)):
-                return candidate
-        js_files = [f for f in os.listdir(srv_path) if f.endswith('.js')]
-        return js_files[0] if js_files else ""
-    elif server_type == "PHP":
-        for candidate in ["index.php", "main.php", "bot.php", "app.php", "start.php", "run.php"]:
-            if os.path.exists(os.path.join(srv_path, candidate)):
-                return candidate
-        php_files = [f for f in os.listdir(srv_path) if f.endswith('.php')]
-        return php_files[0] if php_files else ""
-    else:
-        for candidate in ["main.py", "bot.py", "app.py", "index.py", "run.py", "start.py"]:
-            if os.path.exists(os.path.join(srv_path, candidate)):
-                return candidate
-        py_files = [f for f in os.listdir(srv_path) if f.endswith('.py')]
-        return py_files[0] if py_files else ""
+                data=json.load(open(pkg,encoding='utf-8'))
+                main=data.get('main','')
+                if main and os.path.exists(os.path.join(srv_path,main)): return main
+            except Exception: pass
+        for c in ['index.js','index.mjs','server.js','app.js','main.js','bot.js']:
+            if os.path.exists(os.path.join(srv_path,c)): return c
+        return next((f for f in os.listdir(srv_path) if f.endswith(('.js','.mjs','.cjs'))),'')
+    if server_type == "PHP":
+        for c in ['index.php','main.php','app.php','start.php','run.php','bot.php']:
+            if os.path.exists(os.path.join(srv_path,c)): return c
+        return next((f for f in os.listdir(srv_path) if f.endswith('.php')),'')
+    if server_type == "Ruby":
+        for c in ['config.ru','app.rb','server.rb','main.rb','index.rb']:
+            if os.path.exists(os.path.join(srv_path,c)): return c
+        return next((f for f in os.listdir(srv_path) if f.endswith('.rb')),'')
+    if server_type == "Java":
+        for c in ['pom.xml','build.gradle','build.gradle.kts']:
+            if os.path.exists(os.path.join(srv_path,c)): return c
+        return next((f for f in os.listdir(srv_path) if f.endswith('.java')),'')
+    if server_type == "Go":
+        return 'go.mod' if os.path.exists(os.path.join(srv_path,'go.mod')) else next((f for f in os.listdir(srv_path) if f.endswith('.go')),'')
+    if server_type == "Rust":
+        return 'Cargo.toml' if os.path.exists(os.path.join(srv_path,'Cargo.toml')) else next((f for f in os.listdir(srv_path) if f.endswith('.rs')),'')
+    if server_type == "Static":
+        for c in ['index.html','index.htm','home.html']:
+            if os.path.exists(os.path.join(srv_path,c)): return c
+        return next((f for f in os.listdir(srv_path) if f.endswith(('.html','.htm'))),'')
+    for c in ['main.py','app.py','server.py','index.py','run.py','start.py','bot.py']:
+        if os.path.exists(os.path.join(srv_path,c)): return c
+    return next((f for f in os.listdir(srv_path) if f.endswith('.py')),'')
+
+def _list_process_ports(pid):
+    ports=set()
+    try:
+        root=psutil.Process(pid); procs=[root]+root.children(recursive=True)
+        for proc in procs:
+            try: conns=proc.net_connections(kind='inet')
+            except Exception: conns=[]
+            for c in conns:
+                if getattr(c,'status',None)==psutil.CONN_LISTEN and getattr(c,'laddr',None):
+                    if getattr(c.laddr,'port',None): ports.add(int(c.laddr.port))
+    except Exception: pass
+    return ports
+
+def _port_is_open(port):
+    try:
+        with socket.create_connection(('127.0.0.1',int(port)),timeout=.25): return True
+    except Exception: return False
+
+def discover_running_port(pid, preferred=None, timeout=25):
+    deadline=time.time()+timeout
+    while time.time()<deadline:
+        candidates=set(_list_process_ports(pid))
+        if preferred: candidates.add(int(preferred))
+        for port in sorted(candidates):
+            if _port_is_open(port): return port
+        try:
+            if not psutil.Process(pid).is_running(): return None
+        except Exception: return None
+        time.sleep(.5)
+    return None
+
+PORT_RANGE_START=8100
+PORT_RANGE_END=9100
+
+def get_assigned_port():
+    used={srv.get('port') for srv in db.get('servers',{}).values() if srv.get('port')}
+    for port in range(PORT_RANGE_START,PORT_RANGE_END):
+        if port not in used and not _port_is_open(port): return port
+    return PORT_RANGE_START
 
 # ============== تثبيت تلقائي للمكتبات ==============
 # أسماء الاستيراد الشائعة التي تختلف عن اسم الحزمة في PyPI.
@@ -615,83 +659,75 @@ def auto_install_deps(srv_path: str, server_type: str, log_file):
 
 # ============== تشغيل السيرفر ==============
 def start_server_process(folder):
-    srv = db["servers"].get(folder)
-    if not srv:
-        return False, "السيرفر غير موجود"
-
-    # كشف تلقائي قبل التشغيل
-    auto_detect_server_type(srv["path"], srv)
-
-    server_type = srv.get("type", "Python")
-    main_file = srv.get("startup_file", "")
-
-    if not main_file:
-        main_file = detect_main_file(srv["path"], server_type)
-        if main_file:
-            srv["startup_file"] = main_file
-            save_db(db)
-        else:
-            if server_type == "Python":
-                return False, "لا يوجد ملف تشغيل Python (.py)"
-            elif server_type == "PHP":
-                return False, "لا يوجد ملف تشغيل PHP (.php)"
-            else:
-                return False, "لا يوجد ملف تشغيل Node.js (.js)"
-
-    file_path = os.path.join(srv["path"], main_file)
-    if not os.path.exists(file_path):
-        return False, f"الملف '{main_file}' غير موجود"
-
-    port = srv.get("port") or get_assigned_port()
-    srv["port"] = port
-    save_db(db)
-
-    log_path = os.path.join(srv["path"], "out.log")
-    error_path = os.path.join(srv["path"], "errors.log")
-    log_file = open(log_path, "a", encoding='utf-8')
-    log_file.write(
-        f"\n{'='*50}\n🚀 بدء التشغيل - {datetime.now()}\n"
-        f"📁 {main_file}\n🔌 المنفذ: {port}\n🏷 النوع: {server_type}\n{'='*50}\n\n"
-    )
-    log_file.flush()
-
+    srv=db['servers'].get(folder)
+    if not srv: return False,'السيرفر غير موجود'
+    srv_path=srv.get('path','')
+    if not os.path.isdir(srv_path): return False,'مجلد المشروع غير موجود'
+    detected=detect_project_type(srv_path)
+    if not srv.get('type') or srv.get('type')=='Python': srv['type']=detected
+    server_type=srv.get('type','Python')
+    main_file=srv.get('startup_file') or detect_main_file(srv_path,server_type)
+    srv['startup_file']=main_file
+    if server_type=='Static':
+        if not main_file: return False,'لا يوجد ملف HTML'
+        srv.update(status='Running',pid=None,port=None,start_time=time.time())
+        save_db(db); return True,'✅ تم تشغيل الموقع الثابت'
+    if not main_file: return False,f'لا يوجد ملف تشغيل لـ {server_type}'
+    file_path=os.path.join(srv_path,main_file)
+    if server_type not in ('Java','Go','Rust') and not os.path.exists(file_path): return False,f"الملف '{main_file}' غير موجود"
+    preferred=srv.get('port') or get_assigned_port(); srv['port']=preferred
+    log_path=os.path.join(srv_path,'out.log'); error_path=os.path.join(srv_path,'errors.log')
+    log_file=open(log_path,'a',encoding='utf-8'); log_file.write(f"\n{'='*60}\n🚀 بدء التشغيل {datetime.now()}\n📁 {main_file}\n🔌 المنفذ المطلوب: {preferred}\n🏷 النوع: {server_type}\n{'='*60}\n"); log_file.flush()
+    env=os.environ.copy(); env.update(PORT=str(preferred),SERVER_PORT=str(preferred),HOST='0.0.0.0',HOSTNAME='0.0.0.0')
     try:
-        env = os.environ.copy()
-        env["PORT"] = str(port)
-        env["SERVER_PORT"] = str(port)
-        
-        if server_type == "Node.js":
-            cmd = ["node", main_file]
-        elif server_type == "PHP":
-            cmd = ["php", "-S", f"0.0.0.0:{port}", "-t", srv["path"]]
+        if server_type=='Node.js':
+            pkg=os.path.join(srv_path,'package.json')
+            use_npm=False
+            if os.path.exists(pkg):
+                try: use_npm=bool(json.load(open(pkg,encoding='utf-8')).get('scripts',{}).get('start'))
+                except Exception: pass
+            cmd=['npm','run','start'] if use_npm else ['node',main_file]
+        elif server_type=='PHP': cmd=['php','-S',f'0.0.0.0:{preferred}','-t',srv_path]
+        elif server_type=='Ruby': cmd=['bundle','exec','rackup','-o','0.0.0.0','-p',str(preferred)] if main_file=='config.ru' and shutil.which('bundle') else ['ruby',main_file]
+        elif server_type=='Java':
+            if os.path.exists(os.path.join(srv_path,'mvnw')): cmd=['./mvnw','spring-boot:run']
+            elif os.path.exists(os.path.join(srv_path,'gradlew')): cmd=['./gradlew','bootRun']
+            elif shutil.which('mvn') and os.path.exists(os.path.join(srv_path,'pom.xml')): cmd=['mvn','spring-boot:run']
+            elif shutil.which('gradle') and os.path.exists(os.path.join(srv_path,'build.gradle')): cmd=['gradle','bootRun']
+            else:
+                jf=main_file if main_file.endswith('.java') else next((x for x in os.listdir(srv_path) if x.endswith('.java')),'')
+                if not jf: return False,'لا يوجد مشروع Java قابل للتشغيل'
+                cls=os.path.splitext(jf)[0]; cmd=['sh','-lc',f'javac {shlex.quote(jf)} && java {shlex.quote(cls)}']
+        elif server_type=='Go': cmd=['go','run','.'] if os.path.exists(os.path.join(srv_path,'go.mod')) else ['go','run',main_file]
+        elif server_type=='Rust': cmd=['cargo','run','--release']
         else:
-            # قبل تشغيل Python: إنشاء البيئة الخاصة وتثبيت المكتبات تلقائياً.
-            with open(log_path, "a", encoding="utf-8") as dep_log:
-                python_bin = ensure_python_environment(srv["path"], dep_log)
-            cmd = [python_bin, "-u", main_file]
-            
-        proc = subprocess.Popen(
-            cmd,
-            cwd=srv["path"],
-            stdout=log_file,
-            stderr=open(error_path, "a", encoding='utf-8'),
-            env=env,
-            preexec_fn=os.setsid if hasattr(os, 'setsid') else None
-        )
-        srv["status"] = "Running"
-        srv["pid"] = proc.pid
-        srv["start_time"] = time.time()
-        save_db(db)
-        return True, "✅ تم التشغيل"
+            with open(log_path,'a',encoding='utf-8') as dep_log: python_bin=ensure_python_environment(srv_path,dep_log)
+            cmd=[python_bin,'-u',main_file]
+        proc=subprocess.Popen(cmd,cwd=srv_path,stdout=log_file,stderr=open(error_path,'a',encoding='utf-8'),env=env,preexec_fn=os.setsid if hasattr(os,'setsid') else None)
+        srv.update(pid=proc.pid,status='Starting',start_time=time.time()); save_db(db)
+        def settle():
+            actual=discover_running_port(proc.pid,preferred,30)
+            try:
+                if actual:
+                    srv.update(port=actual,status='Running')
+                    with open(log_path,'a',encoding='utf-8') as lf: lf.write(f'\n✅ الموقع يستمع فعلياً على المنفذ {actual}\n')
+                elif proc.poll() is not None:
+                    srv.update(status='Stopped',pid=None)
+                    with open(log_path,'a',encoding='utf-8') as lf: lf.write(f'\n❌ انتهت العملية برمز {proc.returncode}; راجع errors.log\n')
+                else:
+                    srv['status']='Running'
+                    with open(log_path,'a',encoding='utf-8') as lf: lf.write('\nℹ️ العملية تعمل لكن لم يتم اكتشاف منفذ HTTP.\n')
+                save_db(db)
+            except Exception: pass
+        threading.Thread(target=settle,daemon=True).start()
+        return True,'🚀 بدأ التشغيل — يتم اكتشاف المنفذ الحقيقي تلقائياً'
     except FileNotFoundError:
-        err = f"❌ المشغّل غير موجود: {'node' if server_type == 'Node.js' else 'php' if server_type == 'PHP' else 'python'}"
-        log_file.write(err + "\n")
-        log_file.close()
-        return False, err
+        srv.update(status='Stopped',pid=None); save_db(db); return False,f'❌ المشغّل غير موجود لهذا النوع: {server_type}'
     except Exception as e:
-        log_file.write(f"\n❌ خطأ: {e}\n")
-        log_file.close()
-        return False, str(e)
+        srv.update(status='Stopped',pid=None); save_db(db)
+        try: log_file.write(f'\n❌ خطأ: {e}\n')
+        except Exception: pass
+        return False,str(e)
 
 def stop_server_process(folder):
     srv = db["servers"].get(folder)
@@ -724,7 +760,7 @@ def process_monitor():
     while True:
         try:
             for folder, srv in list(db["servers"].items()):
-                if srv.get("status") == "Running" and srv.get("pid"):
+                if srv.get("type") != "Static" and srv.get("status") == "Running" and srv.get("pid"):
                     try:
                         p = psutil.Process(srv["pid"])
                         if not p.is_running() or p.status() == psutil.STATUS_ZOMBIE:
@@ -1300,94 +1336,69 @@ def find_telegram_bot_token(srv_path: str):
     return None
 
 def get_server_open_url(folder: str, srv: dict):
-    """إرجاع رابط فتح مناسب للسيرفر."""
-    token = find_telegram_bot_token(srv.get("path", ""))
+    token=find_telegram_bot_token(srv.get('path',''))
     if token:
         try:
-            tg = requests.get(
-                f"https://api.telegram.org/bot{token}/getMe",
-                timeout=8
-            ).json()
-            username = (tg.get("result") or {}).get("username")
-            if username:
-                return {
-                    "kind": "telegram",
-                    "url": f"https://t.me/{username}",
-                    "label": "فتح"
-                }
-        except Exception:
-            pass
-
-    # أي سيرفر لا يحتوي توكن بوت يُعامل كموقع ويب.
-    # يتم تمرير الموقع من خلال نفس تطبيق مزاجي حتى لا نحتاج منفذاً عاماً إضافياً.
-    if srv.get("port"):
-        base = request.host_url.rstrip("/")
-        return {
-            "kind": "website",
-            "url": f"{base}/site/{quote(folder, safe='')}/",
-            "label": "فتح"
-        }
-    return None
+            tg=requests.get(f'https://api.telegram.org/bot{token}/getMe',timeout=8).json(); username=(tg.get('result') or {}).get('username')
+            if username: return {'kind':'telegram','url':f'https://t.me/{username}','label':'فتح'}
+        except Exception: pass
+    return {'kind':'website','url':f"{request.host_url.rstrip('/')}/site/{quote(folder,safe='')}/",'label':'فتح'}
 
 @app.route('/api/server/open/<folder>')
 def server_open(folder):
-    if "username" not in session:
-        return jsonify({"success": False, "message": "غير مصرح"}), 401
-    srv = db["servers"].get(folder)
-    if not srv or srv.get("owner") != session["username"]:
-        return jsonify({"success": False, "message": "غير مصرح"}), 403
+    if 'username' not in session: return jsonify({'success':False,'message':'غير مصرح'}),401
+    srv=db['servers'].get(folder)
+    if not srv or srv.get('owner')!=session['username']: return jsonify({'success':False,'message':'غير مصرح'}),403
+    return jsonify({'success':True,**get_server_open_url(folder,srv)})
 
-    result = get_server_open_url(folder, srv)
-    if not result:
-        return jsonify({"success": False, "message": "تعذر تحديد رابط الفتح"}), 404
+def _rewrite_site_html(html,prefix):
+    # Root-relative attributes
+    pat=r'(?P<a>(?:href|src|action|poster|data-src|data-href)\s*=\s*["\'])/(?P<p>(?!/)[^"\']*)'
+    html=re.sub(pat,lambda m:m.group('a')+prefix+'/'+m.group('p'),html,flags=re.I)
+    html=re.sub(r'url\(\s*(["\']?)/(?!/)',lambda m:'url('+m.group(1)+prefix+'/',html,flags=re.I)
+    p=json.dumps(prefix)
+    bridge="""<script>(function(){const P=%s;function R(u){try{if(typeof u!=='string')return u;if(u[0]=='/'&&u.slice(0,2)!=='//'&&!u.startsWith(P+'/'))return P+u}catch(e){}return u}const F=window.fetch;window.fetch=function(i,o){if(typeof i==='string')i=R(i);return F.call(this,i,o)};const O=XMLHttpRequest.prototype.open;XMLHttpRequest.prototype.open=function(m,u){arguments[1]=R(u);return O.apply(this,arguments)};})();</script>""" % p
+    low=html.lower(); idx=low.find('</head>')
+    return html[:idx]+bridge+html[idx:] if idx>=0 else bridge+html
 
-    return jsonify({"success": True, **result})
+def _proxy_headers(upstream,prefix):
+    out=[]
+    for k,v in upstream.headers.items():
+        kl=k.lower()
+        if kl in {'content-encoding','content-length','transfer-encoding','connection'}: continue
+        if kl=='location' and v.startswith('/') and not v.startswith(prefix+'/'): v=prefix+v
+        if kl=='set-cookie': v=re.sub(r'(?i)(?:;\s*)?Path=/', '; Path='+prefix+'/', v)
+        out.append((k,v))
+    return out
 
-@app.route('/site/<folder>/', defaults={'subpath': ''})
-@app.route('/site/<folder>/<path:subpath>')
-def proxy_user_site(folder, subpath):
-    """وكيل بسيط لعرض مواقع السيرفرات من خلال رابط فتح واحد."""
-    srv = db["servers"].get(unquote(folder))
-    if not srv or not srv.get("port"):
-        return "الموقع غير متاح", 404
-
-    # لا نسمح بالوصول إلى سيرفرات الآخرين عبر هذا المسار.
-    if srv.get("owner") != session.get("username"):
-        return "غير مصرح", 403
-
-    if srv.get("status") != "Running":
-        return "الموقع متوقف حالياً. شغّل السيرفر ثم اضغط فتح مرة أخرى.", 503
-
-    target_path = "/" + subpath
-    if request.query_string:
-        target_path += "?" + request.query_string.decode("utf-8", errors="ignore")
-
+@app.route('/site/<folder>/',defaults={'subpath':''},methods=['GET','POST','PUT','PATCH','DELETE','OPTIONS','HEAD'])
+@app.route('/site/<folder>/<path:subpath>',methods=['GET','POST','PUT','PATCH','DELETE','OPTIONS','HEAD'])
+def proxy_user_site(folder,subpath):
+    folder=unquote(folder); srv=db['servers'].get(folder)
+    if not srv: return 'الموقع غير موجود',404
+    if srv.get('owner')!=session.get('username'): return 'غير مصرح',403
+    prefix='/site/'+quote(folder,safe='')
+    if srv.get('type')=='Static':
+        base=os.path.abspath(srv.get('path','')); rel=subpath or srv.get('startup_file') or 'index.html'; target=safe_relative_path(base,rel)
+        if not target or not os.path.isfile(target): return 'الملف غير موجود',404
+        try:
+            from mimetypes import guess_type; ctype=guess_type(target)[0] or ''
+            if 'text/html' in ctype:
+                html=open(target,'r',encoding='utf-8',errors='ignore').read(); return Response(_rewrite_site_html(html,prefix),content_type='text/html; charset=utf-8')
+        except Exception: pass
+        return send_file(target)
+    if srv.get('status') not in ('Running','Starting'): return 'الموقع متوقف حالياً. شغّل السيرفر ثم اضغط فتح مرة أخرى.',503
+    port=srv.get('port')
+    if not port: return 'لم يتم اكتشاف منفذ HTTP لهذا المشروع. إذا كان المشروع بوتاً فقط فلا يوجد موقع لفتحه.',503
+    target_path='/'+subpath
+    if request.query_string: target_path+='?'+request.query_string.decode('utf-8',errors='ignore')
     try:
-        upstream = requests.request(
-            method=request.method,
-            url=f"http://127.0.0.1:{int(srv['port'])}{target_path}",
-            headers={
-                k: v for k, v in request.headers.items()
-                if k.lower() not in {"host", "content-length"}
-            },
-            data=request.get_data(),
-            cookies=request.cookies,
-            allow_redirects=False,
-            timeout=30,
-            stream=True
-        )
-
-        excluded = {"content-encoding", "content-length", "transfer-encoding", "connection"}
-        headers = [(k, v) for k, v in upstream.headers.items()
-                   if k.lower() not in excluded]
-
-        from flask import Response
-        response = Response(upstream.iter_content(chunk_size=8192),
-                            status=upstream.status_code,
-                            headers=headers)
-        return response
-    except Exception as e:
-        return f"تعذر فتح الموقع: {e}", 502
+        upstream=requests.request(request.method,f'http://127.0.0.1:{int(port)}{target_path}',headers={k:v for k,v in request.headers.items() if k.lower() not in {'host','content-length'}},data=request.get_data(),cookies=request.cookies,allow_redirects=False,timeout=45,stream=True)
+        headers=_proxy_headers(upstream,prefix); ctype=upstream.headers.get('Content-Type','')
+        if 'text/html' in ctype:
+            raw=upstream.content.decode(upstream.encoding or 'utf-8',errors='replace'); return Response(_rewrite_site_html(raw,prefix),status=upstream.status_code,headers=headers,content_type='text/html; charset=utf-8')
+        return Response(upstream.iter_content(chunk_size=8192),status=upstream.status_code,headers=headers)
+    except Exception as e: return f'تعذر فتح الموقع: {e}',502
 
 @app.route('/api/servers')
 def list_servers():
@@ -1720,6 +1731,23 @@ def _auto_install_after_upload(srv_path: str, server_type: str, log_path: str):
             pass
 
 
+def normalize_extracted_project(path):
+    """إذا كان ZIP يحتوي مجلد مشروع واحد، نرفع محتواه إلى جذر السيرفر حتى تعمل المسارات."""
+    try:
+        entries=[e for e in os.listdir(path) if e not in {'out.log','errors.log'}]
+        meaningful=[e for e in entries if not e.lower().endswith('.zip')]
+        if len(meaningful)==1 and os.path.isdir(os.path.join(path,meaningful[0])):
+            nested=os.path.join(path,meaningful[0])
+            for item in os.listdir(nested):
+                src=os.path.join(nested,item); dst=os.path.join(path,item)
+                if os.path.exists(dst):
+                    if os.path.isdir(src) and os.path.isdir(dst): shutil.copytree(src,dst,dirs_exist_ok=True); shutil.rmtree(src,ignore_errors=True)
+                    else: continue
+                else: shutil.move(src,dst)
+            shutil.rmtree(nested,ignore_errors=True)
+    except Exception:
+        pass
+
 @app.route('/api/server/auto-upload', methods=['POST'])
 def auto_create_server_from_upload():
     """رفع ملف مباشرة من لوحة المستخدم وإنشاء السيرفر تلقائياً."""
@@ -1743,16 +1771,16 @@ def auto_create_server_from_upload():
         return jsonify({"success": False, "message": "اسم الملف غير صالح"})
 
     ext = os.path.splitext(filename)[1].lower()
-    if ext == '.py':
-        server_type = "Python"
-    elif ext == '.js':
-        server_type = "Node.js"
-    elif ext == '.php':
-        server_type = "PHP"
-    elif ext == '.zip':
-        server_type = "Python"
-    else:
-        return jsonify({"success": False, "message": "ارفع ملف Python أو ZIP أو JavaScript أو PHP"})
+    if ext == '.py': server_type='Python'
+    elif ext in ('.js','.mjs','.cjs'): server_type='Node.js'
+    elif ext == '.php': server_type='PHP'
+    elif ext == '.rb': server_type='Ruby'
+    elif ext == '.java': server_type='Java'
+    elif ext == '.go': server_type='Go'
+    elif ext == '.rs': server_type='Rust'
+    elif ext in ('.html','.htm'): server_type='Static'
+    elif ext == '.zip': server_type='Python'
+    else: return jsonify({"success":False,"message":"ارفع مشروع ويب أو ZIP أو Python/Node/PHP/Ruby/Java/Go/Rust/HTML"})
 
     base_name = os.path.splitext(filename)[0]
     safe_name = re.sub(r'[^a-zA-Z0-9_-]+', '', base_name) or "my-server"
@@ -1764,7 +1792,7 @@ def auto_create_server_from_upload():
     plan_id = user.get("plan", "free")
     plan = db["plans"].get(plan_id, db["plans"]["free"])
     assigned_port = get_assigned_port()
-    startup_file = filename if ext in {'.py', '.js', '.php'} else ""
+    startup_file = filename if ext in {'.py','.js','.mjs','.cjs','.php','.rb','.java','.go','.rs','.html','.htm'} else ""
 
     try:
         f.save(os.path.join(path, filename))
@@ -1774,13 +1802,9 @@ def auto_create_server_from_upload():
                 if zf.testzip():
                     raise ValueError("ملف ZIP تالف")
                 zf.extractall(path)
+            normalize_extracted_project(path)
             # تحديد نوع المشروع وملف التشغيل من المحتوى بعد فك الضغط.
-            if os.path.exists(os.path.join(path, "package.json")) or any(name.endswith('.js') for name in os.listdir(path)):
-                server_type = "Node.js"
-            elif any(name.endswith('.php') for name in os.listdir(path)):
-                server_type = "PHP"
-            else:
-                server_type = "Python"
+            server_type = detect_project_type(path)
             startup_file = detect_main_file(path, server_type)
 
         db["servers"][folder] = {
@@ -1967,6 +1991,37 @@ def delete_files(folder):
         save_db(db)
         return jsonify({"success": True, "message": f"🗑 تم حذف {deleted} ملف"})
     return jsonify({"success": False, "message": "فشل الحذف"})
+
+@app.route('/api/files/delete-all/<folder>', methods=['POST'])
+def delete_all_files(folder):
+    if 'username' not in session: return jsonify({'success':False,'message':'غير مصرح'}),401
+    srv=db['servers'].get(folder)
+    if not srv or srv.get('owner')!=session['username']: return jsonify({'success':False,'message':'غير مصرح'}),403
+    base=os.path.abspath(srv.get('path',''))
+    if not os.path.isdir(base): return jsonify({'success':False,'message':'مجلد السيرفر غير موجود'}),404
+    stop_server_process(folder); deleted=0
+    try:
+        for name in os.listdir(base):
+            target=os.path.join(base,name)
+            try:
+                if os.path.isdir(target) and not os.path.islink(target): shutil.rmtree(target)
+                else: os.remove(target)
+                deleted+=1
+            except Exception: pass
+        srv.update(startup_file='',status='Stopped',pid=None,port=get_assigned_port()); save_db(db)
+        return jsonify({'success':True,'message':f'🗑 تم حذف كل الملفات والمجلدات ({deleted})'})
+    except Exception as e: return jsonify({'success':False,'message':f'فشل حذف الكل: {e}'}),500
+
+@app.route('/api/files/create-folder/<folder>', methods=['POST'])
+def create_folder_api(folder):
+    if 'username' not in session: return jsonify({'success':False,'message':'غير مصرح'}),401
+    srv=db['servers'].get(folder)
+    if not srv or srv.get('owner')!=session['username']: return jsonify({'success':False,'message':'غير مصرح'}),403
+    data=request.get_json() or {}; name=safe_relative_path(srv['path'],data.get('filename','').strip())
+    if not name: return jsonify({'success':False,'message':'اسم المجلد غير صالح'}),400
+    if os.path.exists(name): return jsonify({'success':False,'message':'المجلد موجود مسبقاً'}),409
+    try: os.makedirs(name); return jsonify({'success':True,'message':'📁 تم إنشاء المجلد'})
+    except Exception as e: return jsonify({'success':False,'message':str(e)}),500
 
 @app.route('/api/files/create/<folder>', methods=['POST'])
 def create_file_api(folder):
