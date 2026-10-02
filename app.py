@@ -576,6 +576,116 @@ def _ensure_python_requirements_for_start(srv_path: str, log_file):
             log_file.write("📦 تم إنشاء requirements.txt تلقائياً\n")
             log_file.flush()
 
+def _is_fastapi_project(srv_path: str, startup_file: str) -> bool:
+    try:
+        p = os.path.join(srv_path, startup_file)
+        text = Path(p).read_text(encoding="utf-8", errors="ignore")[:300000]
+        return ("from fastapi import" in text or "import fastapi" in text) and re.search(r'\b(?:app|application)\s*=\s*FastAPI\s*\(', text) is not None
+    except Exception:
+        return False
+
+
+def _python_syntax_check(srv_path: str):
+    """يفحص كل ملفات Python ويعيد أخطاء الصياغة بشكل مفهوم قبل التشغيل."""
+    errors = []
+    for root, dirs, files in os.walk(srv_path):
+        dirs[:] = [d for d in dirs if d not in {".venv", "venv", "__pycache__", ".git"}]
+        for name in files:
+            if not name.endswith(".py"):
+                continue
+            path = os.path.join(root, name)
+            try:
+                source = Path(path).read_text(encoding="utf-8", errors="strict")
+                compile(source, path, "exec")
+            except SyntaxError as e:
+                rel = os.path.relpath(path, srv_path).replace(os.sep, "/")
+                errors.append(f"{rel}: السطر {e.lineno or '?'}: {e.msg}")
+            except UnicodeDecodeError:
+                rel = os.path.relpath(path, srv_path).replace(os.sep, "/")
+                errors.append(f"{rel}: الملف ليس UTF-8 صالحاً")
+    return errors
+
+
+def _prepare_server_for_start(folder, install_deps=True):
+    """مرحلة موحدة للإصلاح والكشف قبل أي تشغيل. لا تعتبر العملية ناجحة إلا إذا أصبح ملف التشغيل صالحاً."""
+    srv = db["servers"].get(folder)
+    if not srv:
+        return False, "الخادم غير موجود", {}, [], []
+    base = os.path.abspath(str(srv.get("path") or ""))
+    if not os.path.isdir(base):
+        return False, "مجلد الخادم غير موجود", {}, [], []
+    created, fixed, warnings = [], [], []
+    detected = auto_detect_server_type(base, srv)
+    typ = detected or srv.get("type") or "Python"
+    srv["type"] = typ
+    startup = detect_main_file(base, typ)
+    if startup:
+        srv["startup_file"] = startup
+        fixed.append(f"ملف التشغيل: {startup}")
+    if not startup and typ != "HTML":
+        # إعادة الكشف من كل الامتدادات قبل إعلان الفشل.
+        found = _find_runtime_files(base)
+        for candidate_type in ("Python", "PHP", "Node.js", "HTML"):
+            if found[candidate_type]:
+                typ = candidate_type
+                srv["type"] = typ
+                startup = detect_main_file(base, typ)
+                if startup:
+                    srv["startup_file"] = startup
+                    fixed.append(f"تم اكتشاف المشروع تلقائياً: {typ}/{startup}")
+                    break
+    if typ == "Python":
+        syntax_errors = _python_syntax_check(base)
+        if syntax_errors:
+            warnings.extend([f"خطأ Python: {x}" for x in syntax_errors[:20]])
+            return False, "يوجد خطأ في صياغة Python ويجب إصلاحه قبل التشغيل.", {"type": typ, "startup_file": srv.get("startup_file", "")}, created, fixed + warnings
+        req = os.path.join(base, "requirements.txt")
+        if not os.path.exists(req) or not Path(req).read_text(encoding="utf-8", errors="ignore").strip():
+            packages = detect_python_packages(base)
+            pyfiles = _find_runtime_files(base)["Python"]
+            if any(_is_flask_project(base, x) for x in pyfiles) and not any(str(x).lower().startswith("flask") for x in packages):
+                packages.append("Flask>=3.0")
+            if any(_is_flask_project(base, x) for x in pyfiles) and not any(str(x).lower().startswith("gunicorn") for x in packages):
+                packages.append("gunicorn>=21.2")
+            if any(_is_fastapi_project(base, x) for x in pyfiles) and not any(str(x).lower().startswith("fastapi") for x in packages):
+                packages.append("fastapi>=0.100")
+            if any(_is_fastapi_project(base, x) for x in pyfiles) and not any(str(x).lower().startswith("uvicorn") for x in packages):
+                packages.append("uvicorn>=0.23")
+            Path(req).write_text("\n".join(dict.fromkeys(packages)) + ("\n" if packages else ""), encoding="utf-8")
+            created.append("requirements.txt")
+        if install_deps:
+            log_path = os.path.join(base, "out.log")
+            with open(log_path, "a", encoding="utf-8") as lf:
+                python_bin = ensure_python_environment(base, lf)
+            if not os.path.exists(python_bin):
+                return False, "تعذر إنشاء بيئة Python للتشغيل.", {"type": typ, "startup_file": startup}, created, fixed
+            fixed.append("تم تجهيز بيئة Python")
+    elif typ == "PHP":
+        if shutil.which("php") is None:
+            warnings.append("PHP غير مثبت على الاستضافة؛ لا يمكن للكود تثبيته من داخل التطبيق.")
+            return False, "PHP غير مثبت على الاستضافة.", {"type": typ, "startup_file": startup}, created, fixed + warnings
+        if not startup:
+            Path(os.path.join(base, "index.php")).write_text("<?php\nheader('Content-Type: text/html; charset=UTF-8');\necho 'PHP server is ready.';\n", encoding="utf-8")
+            startup = "index.php"
+            srv["startup_file"] = startup
+            created.append("index.php")
+    elif typ == "Node.js":
+        if shutil.which("node") is None:
+            return False, "Node.js غير مثبت على الاستضافة.", {"type": typ, "startup_file": startup}, created, fixed
+        if install_deps:
+            with open(os.path.join(base, "out.log"), "a", encoding="utf-8") as lf:
+                auto_install_deps(base, typ, lf)
+            fixed.append("تم فحص Node.js dependencies")
+    elif typ == "HTML":
+        startup = startup or "index.html"
+        srv["startup_file"] = startup
+        fixed.append("سيعمل الموقع عبر HTTP server")
+    if not startup and typ != "HTML":
+        return False, "لم يتم العثور على ملف تشغيل. ارفع ملف .py أو .php أو .js أو index.html.", {"type": typ, "startup_file": ""}, created, fixed + warnings
+    save_db(db)
+    return True, "جاهز للتشغيل", {"type": typ, "startup_file": srv.get("startup_file", startup or "")}, created, fixed + warnings
+
+
 def start_server_process(folder):
     srv = db["servers"].get(folder)
     if not srv:
@@ -583,21 +693,17 @@ def start_server_process(folder):
     base = os.path.abspath(str(srv.get("path") or ""))
     if not os.path.isdir(base):
         return False, "مجلد الخادم غير موجود"
-
-    detected = auto_detect_server_type(base, srv)
-    server_type = detected or srv.get("type") or "Python"
-    main_file = str(srv.get("startup_file") or "").replace("\\", "/")
-    if not main_file or not os.path.isfile(os.path.join(base, main_file)):
-        main_file = detect_main_file(base, server_type)
-        if main_file:
-            srv["startup_file"] = main_file
-    if not main_file:
-        return False, f"❌ لم أجد ملف تشغيل {server_type}. ارفع ملف التشغيل أو استخدم الإصلاح التلقائي."
-
-    file_path = os.path.abspath(os.path.join(base, main_file))
-    if os.path.commonpath([base, file_path]) != base or not os.path.isfile(file_path):
-        return False, f"❌ ملف التشغيل غير موجود: {main_file}"
-
+    ok, prep_msg, info, _created, prep_notes = _prepare_server_for_start(folder, install_deps=True)
+    if not ok:
+        details = " | ".join(prep_notes[-4:]) if prep_notes else ""
+        return False, (prep_msg + (f" — {details}" if details else ""))
+    server_type = info.get("type") or srv.get("type") or "Python"
+    main_file = str(info.get("startup_file") or srv.get("startup_file") or "").replace("\\", "/")
+    if not main_file and server_type != "HTML":
+        return False, "لم يتم تحديد ملف تشغيل صالح"
+    file_path = os.path.abspath(os.path.join(base, main_file)) if main_file else base
+    if server_type != "HTML" and (os.path.commonpath([base, file_path]) != base or not os.path.isfile(file_path)):
+        return False, f"ملف التشغيل غير موجود: {main_file}"
     port = srv.get("port") or get_assigned_port()
     srv["port"] = port
     save_db(db)
@@ -611,42 +717,45 @@ def start_server_process(folder):
         env = os.environ.copy()
         env.update({"PORT": str(port), "SERVER_PORT": str(port), "PYTHONUNBUFFERED": "1"})
         if server_type == "Node.js":
-            if shutil.which("node") is None:
-                raise FileNotFoundError("node")
             cmd = ["node", main_file]
         elif server_type == "PHP":
-            if shutil.which("php") is None:
-                raise FileNotFoundError("php")
             cmd = ["php", "-S", f"0.0.0.0:{port}", "-t", base]
         elif server_type == "HTML":
-            python_bin = ensure_python_environment(base, log_file)
-            cmd = [python_bin, "-m", "http.server", str(port), "--bind", "0.0.0.0", "--directory", base]
+            cmd = [sys.executable, "-m", "http.server", str(port), "--bind", "0.0.0.0", "--directory", base]
         else:
-            with open(log_path, "a", encoding="utf-8") as dep_log:
-                _ensure_python_requirements_for_start(base, dep_log)
-                python_bin = ensure_python_environment(base, dep_log)
+            python_bin = os.path.join(base, ".venv", "bin", "python")
+            if os.name == "nt": python_bin = os.path.join(base, ".venv", "Scripts", "python.exe")
+            if not os.path.exists(python_bin): python_bin = sys.executable
             if _is_flask_project(base, main_file):
                 gunicorn_bin = os.path.join(os.path.dirname(python_bin), "gunicorn")
-                if os.name == "nt":
-                    gunicorn_bin += ".exe"
+                if os.name == "nt": gunicorn_bin += ".exe"
                 if os.path.isfile(gunicorn_bin):
                     module = os.path.splitext(main_file)[0].replace("/", ".").replace("\\", ".")
                     cmd = [gunicorn_bin, "--bind", f"0.0.0.0:{port}", "--workers", "1", f"{module}:app"]
                 else:
-                    cmd = [python_bin, "-u", main_file]
+                    module = os.path.splitext(main_file)[0].replace("/", ".").replace("\\", ".")
+                    cmd = [python_bin, "-m", "flask", "--app", f"{module}:app", "run", "--host", "0.0.0.0", "--port", str(port)]
+            elif _is_fastapi_project(base, main_file):
+                module = os.path.splitext(main_file)[0].replace("/", ".").replace("\\", ".")
+                cmd = [python_bin, "-m", "uvicorn", f"{module}:app", "--host", "0.0.0.0", "--port", str(port)]
             else:
                 cmd = [python_bin, "-u", main_file]
-
         proc = subprocess.Popen(cmd, cwd=base, stdout=log_file, stderr=err_file, env=env,
                                 preexec_fn=os.setsid if hasattr(os, "setsid") else None)
-        time.sleep(0.35)
+        time.sleep(0.8)
         if proc.poll() is not None:
-            raise RuntimeError(f"ملف التشغيل توقف فوراً. راجع errors.log وout.log (exit={proc.returncode})")
+            try:
+                err_file.flush()
+                with open(error_path, "r", encoding="utf-8", errors="ignore") as ef:
+                    tail = ef.read()[-1200:].strip()
+            except Exception:
+                tail = ""
+            raise RuntimeError(f"ملف التشغيل توقف مباشرة (exit={proc.returncode})" + (f": {tail}" if tail else ""))
         srv.update({"status": "Running", "pid": proc.pid, "start_time": time.time(), "type": server_type, "startup_file": main_file})
         save_db(db)
         return True, f"✅ تم تشغيل {main_file} على المنفذ {port}"
     except FileNotFoundError as e:
-        name = str(e) or ("node" if server_type == "Node.js" else "php" if server_type == "PHP" else "python")
+        name = str(e) or server_type
         msg = f"❌ برنامج التشغيل غير مثبت على الاستضافة: {name}"
         log_file.write(msg + "\n"); log_file.flush()
         return False, msg
@@ -1681,76 +1790,27 @@ def auto_create_server_from_upload():
 
 @app.route('/api/server/auto-repair/<folder>', methods=['POST'])
 def auto_repair_server(folder):
-    """إصلاح شامل وآمن: كشف النوع، تحديد ملف التشغيل، إنشاء المتطلبات الناقصة، وتجهيز البيئة."""
     if "username" not in session:
         return jsonify({"success": False, "message": "غير مصرح"}), 401
     srv = db["servers"].get(folder)
     if not srv or srv.get("owner") != session["username"]:
         return jsonify({"success": False, "message": "غير مصرح"}), 403
-    base = os.path.abspath(str(srv.get("path") or ""))
-    if not os.path.isdir(base):
-        return jsonify({"success": False, "message": "❌ مجلد الخادم غير موجود"}), 404
-
-    created, fixed, warnings = [], [], []
     try:
-        detected = auto_detect_server_type(base, srv)
-        typ = detected or srv.get("type") or "Python"
-        srv["type"] = typ
-        startup = detect_main_file(base, typ)
-        if startup:
-            srv["startup_file"] = startup
-            fixed.append(f"ملف التشغيل: {startup}")
-        else:
-            warnings.append(f"لا يوجد ملف تشغيل {typ}")
-
-        if typ == "Python":
-            req = os.path.join(base, "requirements.txt")
-            if not os.path.exists(req):
-                packages = detect_python_packages(base)
-                pyfiles = _find_runtime_files(base)["Python"]
-                if any(_is_flask_project(base, x) for x in pyfiles):
-                    if not any(str(x).lower().startswith("flask") for x in packages):
-                        packages.append("Flask>=3.0")
-                    if not any(str(x).lower().startswith("gunicorn") for x in packages):
-                        packages.append("gunicorn>=21.2")
-                content = "\n".join(dict.fromkeys(packages)) + ("\n" if packages else "")
-                Path(req).write_text(content, encoding="utf-8")
-                created.append("requirements.txt")
-            # جهّز البيئة والمكتبات، لكن لا يفشل الإصلاح إذا كانت pip/venv غير متاحة؛ نسجل السبب.
-            repair_log = os.path.join(base, "out.log")
-            try:
-                with open(repair_log, "a", encoding="utf-8") as lf:
-                    python_bin = ensure_python_environment(base, lf)
-                if python_bin:
-                    fixed.append("بيئة Python والمكتبات جاهزة")
-            except Exception as e:
-                warnings.append(f"تعذر تجهيز بيئة Python: {e}")
-        elif typ == "PHP":
-            index = os.path.join(base, "index.php")
-            if not os.path.exists(index) and not detect_main_file(base, "PHP"):
-                Path(index).write_text("<?php\nheader('Content-Type: text/html; charset=UTF-8');\necho 'PHP server is ready.';\n", encoding="utf-8")
-                created.append("index.php")
-            ht = os.path.join(base, ".htaccess")
-            if not os.path.exists(ht):
-                Path(ht).write_text("DirectoryIndex index.php index.html\nRewriteEngine On\n", encoding="utf-8")
-                created.append(".htaccess")
-        elif typ == "Node.js":
-            try:
-                auto_install_deps(base, typ, open(os.path.join(base, "out.log"), "a", encoding="utf-8"))
-                fixed.append("Node dependencies checked")
-            except Exception as e:
-                warnings.append(f"تعذر تثبيت Node dependencies: {e}")
-        elif typ == "HTML":
-            fixed.append("تم تجهيز الموقع الثابت للتشغيل عبر Python HTTP server")
-
-        Path(os.path.join(base, "out.log")).touch(exist_ok=True)
-        Path(os.path.join(base, "errors.log")).touch(exist_ok=True)
+        ok, msg, info, created, notes = _prepare_server_for_start(folder, install_deps=True)
+        Path(os.path.join(srv["path"], "out.log")).touch(exist_ok=True)
+        Path(os.path.join(srv["path"], "errors.log")).touch(exist_ok=True)
         save_db(db)
-        ok = bool(srv.get("startup_file")) or typ == "HTML"
-        message = "✅ اكتمل الإصلاح التلقائي" if ok else "⚠️ اكتمل الفحص، لكن لا يوجد ملف تشغيل. ارفع ملف .py أو .php أو .js أو index.html."
-        return jsonify({"success": ok, "message": message, "created": created, "fixed": fixed, "warnings": warnings, "type": typ, "startup_file": srv.get("startup_file", "")})
+        return jsonify({
+            "success": ok,
+            "message": ("🛠️ " + msg) if ok else ("⚠️ " + msg),
+            "created": created,
+            "fixed": notes,
+            "warnings": [x for x in notes if str(x).startswith("خطأ") or "غير مثبت" in str(x)],
+            "type": info.get("type", srv.get("type", "")),
+            "startup_file": info.get("startup_file", srv.get("startup_file", ""))
+        }), 200
     except Exception as e:
-        return jsonify({"success": False, "message": f"❌ فشل الإصلاح التلقائي: {e}", "created": created, "fixed": fixed, "warnings": warnings}), 500
+        return jsonify({"success": False, "message": f"⚠️ الإصلاح توقف بسبب خطأ واضح: {e}"}), 200
 
 @app.route('/api/files/replace/<folder>/<path:filename>', methods=['POST'])
 def replace_file(folder, filename):

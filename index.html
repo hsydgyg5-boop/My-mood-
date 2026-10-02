@@ -1723,9 +1723,12 @@
         try{
             const r=await fetch(`/api/server/auto-repair/${encodeURIComponent(currentServer.folder)}`,{method:'POST',headers:{'Content-Type':'application/json'}});
             const d=await r.json();
-            showToast(d.message||'تم الإصلاح',d.success?'success':'error');
-            if(d.success){ loadFiles(); loadStartupFiles(); }
-        }catch(e){ showToast('❌ تعذر الاتصال بخدمة الإصلاح','error'); }
+            if (d.type) currentServer.type = d.type;
+            if (d.startup_file) currentServer.startup_file = d.startup_file;
+            const extra = Array.isArray(d.created) && d.created.length ? ` | أُنشئ: ${d.created.join(', ')}` : '';
+            showToast((d.message||'تم الفحص') + extra, d.success?'success':'error');
+            loadFiles(); loadStartupFiles();
+        }catch(e){ showToast('❌ فشل الاتصال بخدمة الإصلاح: '+(e.message||''),'error'); }
     }
 
     async function unzipFile(name){
@@ -1746,16 +1749,20 @@
         loadStartupFiles(); 
     }
 
-    async function loadStartupFiles() { 
-        if(!currentServer) return; 
-        const r = await fetch(`/api/files/list/${currentServer.folder}`); 
-        const files = await r.json(); 
-        const type = currentServer.type || 'Python';
-        // تحديد الامتدادات حسب نوع السيرفر
-        const extensions = type === 'Node.js' ? ['.js'] : type === 'PHP' ? ['.php'] : ['.py'];
-        const startupFiles = files.filter(f=> extensions.some(ext => f.name.endsWith(ext)) && !f.is_dir); 
-        const select = document.getElementById('startupFileSelect'); 
-        if(select) select.innerHTML = '<option value="">-- اختر ملف التشغيل --</option>'+startupFiles.map(f=>`<option value="${f.name}" ${currentServer.startup_file===f.name?'selected':''}>${f.name}</option>`).join(''); 
+    async function loadStartupFiles() {
+        if(!currentServer) return;
+        try {
+            const files = await apiJson(`/api/files/list/${encodeURIComponent(currentServer.folder)}`);
+            const type = currentServer.type || 'Python';
+            const extensions = type === 'Node.js' ? ['.js'] : type === 'PHP' ? ['.php'] : type === 'HTML' ? ['.html','.htm'] : ['.py'];
+            const startupFiles = files.filter(f=> !f.is_dir && extensions.some(ext => String(f.name).toLowerCase().endsWith(ext)));
+            const select = document.getElementById('startupFileSelect');
+            if(select) {
+                select.innerHTML = '<option value="">-- اختر ملف التشغيل --</option>'+startupFiles.map(f=>`<option value="${escapeHtml(f.name)}" ${currentServer.startup_file===f.name?'selected':''}>${escapeHtml(f.name)}</option>`).join('');
+            }
+        } catch(e) {
+            console.warn('loadStartupFiles', e);
+        }
     }
 
     async function setStartupFile() { 
