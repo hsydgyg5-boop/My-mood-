@@ -210,74 +210,23 @@ def safe_user_filename(filename):
         return ''
     return name[:255]
 
+
+def safe_server_path(srv_path, name, allow_dir=True):
+    """Resolve a user file/folder strictly inside the server directory."""
+    if not name:
+        return None
+    raw = str(name).replace('\\', '/')
+    if raw.startswith('/') or '\x00' in raw:
+        return None
+    base = os.path.abspath(srv_path)
+    target = os.path.abspath(os.path.join(base, raw))
+    if os.path.commonpath([base, target]) != base:
+        return None
+    if not allow_dir and os.path.isdir(target):
+        return None
+    return target
+
 db = load_db()
-
-# ============== إصلاح تلقائي قوي وآمن ==============
-def _safe_extract_zip(zf, destination):
-    destination = os.path.abspath(destination)
-    for member in zf.infolist():
-        raw_name = member.filename.replace('\\', '/')
-        if not raw_name or raw_name.startswith('/') or raw_name.startswith('\\'):
-            raise ValueError(f"مسار ZIP غير آمن: {member.filename}")
-        target = os.path.abspath(os.path.join(destination, raw_name))
-        if os.path.commonpath([destination, target]) != destination:
-            raise ValueError(f"مسار ZIP غير آمن: {member.filename}")
-    zf.extractall(destination)
-
-def auto_repair_server(folder, srv):
-    """إصلاح تلقائي قبل التشغيل وبعد الرفع دون حذف ملفات المستخدم أو تغيير مسار الخادم."""
-    path = os.path.abspath(srv.get('path', ''))
-    if not path:
-        return False, ["مسار الخادم فارغ"]
-    os.makedirs(path, exist_ok=True)
-    repairs = []
-    try:
-        if not os.access(path, os.W_OK):
-            try:
-                os.chmod(path, os.stat(path).st_mode | 0o200 | 0o700)
-                repairs.append("تمت محاولة إصلاح صلاحية الكتابة")
-            except Exception:
-                repairs.append("تعذر إصلاح صلاحية الكتابة تلقائياً")
-    except Exception:
-        pass
-    auto_detect_server_type(path, srv)
-    server_type = srv.get('type', 'Python')
-    if server_type == 'PHP':
-        php_files = [f for f in os.listdir(path) if f.lower().endswith('.php')]
-        if not php_files:
-            try:
-                Path(os.path.join(path, 'index.php')).write_text("<?php\nheader('Content-Type: text/html; charset=UTF-8');\necho 'Mazaji Server OK';\n", encoding='utf-8')
-                php_files = ['index.php']; repairs.append('تم إنشاء index.php تلقائياً')
-            except Exception as e: repairs.append(f'تعذر إنشاء index.php: {e}')
-        if not srv.get('startup_file') or not os.path.isfile(os.path.join(path, srv.get('startup_file', ''))):
-            srv['startup_file'] = 'index.php' if os.path.isfile(os.path.join(path, 'index.php')) else php_files[0]
-            repairs.append(f"تم تعيين ملف PHP الرئيسي: {srv['startup_file']}")
-        ht = os.path.join(path, '.htaccess')
-        if not os.path.exists(ht):
-            try:
-                Path(ht).write_text("# Mazaji auto-generated Apache rules\nDirectoryIndex index.php\n<IfModule mod_rewrite.c>\nRewriteEngine On\nRewriteCond %{REQUEST_FILENAME} !-f\nRewriteCond %{REQUEST_FILENAME} !-d\nRewriteRule ^ index.php [L]\n</IfModule>\n", encoding='utf-8')
-                repairs.append('تم إنشاء .htaccess لدعم Apache/mod_rewrite')
-            except Exception as e: repairs.append(f'تعذر إنشاء .htaccess: {e}')
-    elif server_type == 'Python':
-        if not srv.get('startup_file') or not os.path.isfile(os.path.join(path, srv.get('startup_file', ''))):
-            detected = detect_main_file(path, 'Python')
-            if detected: srv['startup_file'] = detected; repairs.append(f"تم إصلاح ملف تشغيل Python: {detected}")
-        req = os.path.join(path, 'requirements.txt')
-        if not os.path.exists(req):
-            try: Path(req).write_text('', encoding='utf-8'); repairs.append('تم إنشاء requirements.txt مفقود')
-            except Exception: pass
-        main = srv.get('startup_file', '')
-        if main.endswith('.py') and os.path.isfile(os.path.join(path, main)):
-            try:
-                ast.parse(Path(os.path.join(path, main)).read_text(encoding='utf-8', errors='replace'))
-            except SyntaxError as e:
-                repairs.append(f"تم اكتشاف خطأ Python في {main}: السطر {e.lineno or '?'}")
-    elif server_type == 'Node.js':
-        if not srv.get('startup_file') or not os.path.isfile(os.path.join(path, srv.get('startup_file', ''))):
-            detected = detect_main_file(path, 'Node.js')
-            if detected: srv['startup_file'] = detected; repairs.append(f"تم إصلاح ملف تشغيل Node.js: {detected}")
-    save_db(db)
-    return True, repairs
 
 # ============== كشف تلقائي لنوع السيرفر ==============
 def auto_detect_server_type(srv_path: str, srv: dict):
@@ -582,8 +531,7 @@ def start_server_process(folder):
     if not srv:
         return False, "السيرفر غير موجود"
 
-    # إصلاح تلقائي قبل التشغيل مع الحفاظ على مسار وملفات المستخدم.
-    auto_repair_server(folder, srv)
+    # كشف تلقائي قبل التشغيل
     auto_detect_server_type(srv["path"], srv)
 
     server_type = srv.get("type", "Python")
@@ -1351,9 +1299,6 @@ def server_action(folder, action):
     elif action == "restart":
         restart_server(folder)
         return jsonify({"success": True, "message": "🔄 تم إعادة التشغيل"})
-    elif action == "repair":
-        ok, notes = auto_repair_server(folder, srv)
-        return jsonify({"success": ok, "message": "✅ تم الإصلاح التلقائي" if ok else "❌ فشل الإصلاح", "repairs": notes})
     elif action == "delete":
         stop_server_process(folder)
         if os.path.exists(srv["path"]):
@@ -1369,16 +1314,14 @@ def rename_server(folder):
         return jsonify({"success": False, "message": "غير مصرح"}), 401
     srv = db["servers"].get(folder)
     if not srv or srv.get("owner") != session["username"]:
-        return jsonify({"success": False, "message": "الخادم غير موجود أو غير مصرح"}), 403
-    data = request.get_json() or {}
-    name = unicodedata.normalize('NFC', str(data.get("name", "")).strip())[:80]
+        return jsonify({"success": False, "message": "غير مصرح"}), 403
+    data = request.get_json(silent=True) or {}
+    name = str(data.get("name", "")).strip()[:80]
     if not name:
         return jsonify({"success": False, "message": "اكتب اسم الخادم"}), 400
-    # الاسم للعرض فقط: لا نغيّر folder أو path أو الملفات أو قاعدة البيانات الخاصة بالمشروع.
     srv["name"] = name
     save_db(db)
-    return jsonify({"success": True, "message": "✅ تم تغيير اسم الخادم بدون تغيير الملفات أو المسار", "name": name, "folder": folder})
-
+    return jsonify({"success": True, "message": "✅ تم تغيير اسم الخادم", "name": name, "folder": folder})
 
 @app.route('/api/server/stats/<folder>')
 def get_server_stats(folder):
@@ -1467,10 +1410,9 @@ def download_user_file(folder, filename):
     srv = db["servers"].get(folder)
     if not srv or srv.get("owner") != session["username"]:
         return jsonify({"success": False, "message": "غير مصرح"}), 403
-    filename = safe_user_filename(filename)
-    if not filename:
-        return jsonify({"success": False, "message": "اسم ملف غير صالح"}), 400
-    fpath = os.path.join(srv["path"], filename)
+    fpath = safe_server_path(srv["path"], filename, allow_dir=False)
+    if not fpath:
+        return jsonify({"success": False, "message": "مسار ملف غير صالح"}), 400
     if not os.path.isfile(fpath):
         return jsonify({"success": False, "message": "الملف غير موجود"}), 404
     return send_file(fpath, as_attachment=True, download_name=os.path.basename(fpath))
@@ -1553,7 +1495,6 @@ def upload_files(folder):
     if detected_type:
         srv["type"] = detected_type
     auto_detect_server_type(srv["path"], srv)
-    auto_repair_server(folder, srv)
     save_db(db)
 
     log_path = os.path.join(srv["path"], "out.log")
@@ -1636,7 +1577,7 @@ def auto_create_server_from_upload():
             with zipfile.ZipFile(zip_path, 'r') as zf:
                 if zf.testzip():
                     raise ValueError("ملف ZIP تالف")
-                _safe_extract_zip(zf, path)
+                zf.extractall(path)
             # تحديد نوع المشروع وملف التشغيل من المحتوى بعد فك الضغط.
             if os.path.exists(os.path.join(path, "package.json")) or any(name.endswith('.js') for name in os.listdir(path)):
                 server_type = "Node.js"
@@ -1762,128 +1703,91 @@ def rename_file(folder):
 @app.route('/api/files/unzip/<folder>/<path:filename>', methods=['POST'])
 def unzip_file(folder, filename):
     if "username" not in session:
-        return jsonify({"success": False}), 401
+        return jsonify({"success": False, "message": "غير مصرح"}), 401
     srv = db["servers"].get(folder)
-    if not srv or srv["owner"] != session["username"]:
-        return jsonify({"success": False})
-    if not filename.lower().endswith('.zip'):
-        return jsonify({"success": False, "message": "الملف ليس zip"})
-    zip_path = os.path.join(srv["path"], filename)
-    if not os.path.exists(zip_path):
-        return jsonify({"success": False, "message": "الملف غير موجود"})
+    if not srv or srv.get("owner") != session["username"]:
+        return jsonify({"success": False, "message": "غير مصرح"}), 403
+    zip_path = safe_server_path(srv["path"], filename, allow_dir=False)
+    if not zip_path or not filename.lower().endswith('.zip'):
+        return jsonify({"success": False, "message": "ملف ZIP غير صالح"}), 400
+    if not os.path.isfile(zip_path):
+        return jsonify({"success": False, "message": "الملف غير موجود"}), 404
     try:
         with zipfile.ZipFile(zip_path, 'r') as zf:
             bad = zf.testzip()
             if bad:
-                return jsonify({"success": False, "message": f"ملف ZIP تالف: {bad}"})
-            _safe_extract_zip(zf, srv["path"])
-        # كشف وإصلاح تلقائي بعد فك الضغط + حفظ
+                return jsonify({"success": False, "message": f"ملف ZIP تالف: {bad}"}), 400
+            base = os.path.abspath(srv["path"])
+            for member in zf.infolist():
+                dest = os.path.abspath(os.path.join(base, member.filename))
+                if os.path.commonpath([base, dest]) != base:
+                    return jsonify({"success": False, "message": f"تم رفض مسار خطير داخل ZIP: {member.filename}"}), 400
+            zf.extractall(base)
         auto_detect_server_type(srv["path"], srv)
-        auto_repair_server(folder, srv)
         save_db(db)
-        return jsonify({"success": True, "message": f"✅ تم فك ضغط {filename}"})
+        return jsonify({"success": True, "message": f"✅ تم فك ضغط {os.path.basename(zip_path)} بنجاح"})
     except zipfile.BadZipFile:
-        return jsonify({"success": False, "message": "ملف ZIP غير صالح"})
+        return jsonify({"success": False, "message": "ملف ZIP غير صالح"}), 400
     except Exception as e:
-        return jsonify({"success": False, "message": str(e)})
+        return jsonify({"success": False, "message": f"فشل فك الضغط: {e}"}), 500
 
 @app.route('/api/files/delete/<folder>', methods=['POST'])
 def delete_files(folder):
     if "username" not in session:
-        return jsonify({"success": False}), 401
+        return jsonify({"success": False, "message": "غير مصرح"}), 401
     srv = db["servers"].get(folder)
-    if not srv or srv["owner"] != session["username"]:
-        return jsonify({"success": False})
-    data = request.get_json() or {}
+    if not srv or srv.get("owner") != session["username"]:
+        return jsonify({"success": False, "message": "غير مصرح"}), 403
+    data = request.get_json(silent=True) or {}
     names = data.get("names", data.get("name", []))
-    if isinstance(names, str):
-        names = [names]
-    deleted = 0
-    for name in names:
-        if not name or '..' in name:
-            continue
-        fpath = os.path.join(srv["path"], name)
-        try:
-            if os.path.isdir(fpath):
-                shutil.rmtree(fpath)
-            elif os.path.exists(fpath):
-                os.remove(fpath)
-            deleted += 1
-        except Exception:
-            pass
-    if deleted > 0:
-        # كشف تلقائي بعد الحذف + حفظ قاعدة البيانات
-        auto_detect_server_type(srv["path"], srv)
-        save_db(db)
-        return jsonify({"success": True, "message": f"🗑 تم حذف {deleted} ملف"})
-    return jsonify({"success": False, "message": "فشل الحذف"})
-
-@app.route('/api/files/delete-all/<folder>', methods=['POST'])
-def delete_all_files(folder):
-    if "username" not in session:
-        return jsonify({"success": False, "message": "غير مصرح"}), 401
-    srv = db["servers"].get(folder)
-    if not srv or srv.get("owner") != session["username"]:
-        return jsonify({"success": False, "message": "غير مصرح"}), 403
-    path = os.path.abspath(srv.get("path", ""))
-    if not path or not os.path.isdir(path):
-        return jsonify({"success": False, "message": "مجلد الخادم غير موجود"}), 404
-    protected = {"out.log", "errors.log", "server.log", "meta.json"}
+    if isinstance(names, str): names = [names]
+    if data.get("all") is True:
+        names = [n for n in os.listdir(srv["path"]) if n not in {'out.log','server.log','meta.json','errors.log'}]
     deleted = 0; errors = []
-    for name in os.listdir(path):
-        if name in protected: continue
-        target = os.path.join(path, name)
+    protected = {'out.log','server.log','meta.json','errors.log'}
+    for name in names if isinstance(names, list) else []:
+        if not name or os.path.basename(str(name)) in protected:
+            continue
+        fpath = safe_server_path(srv["path"], name)
+        if not fpath or not os.path.exists(fpath):
+            continue
         try:
-            shutil.rmtree(target) if os.path.isdir(target) else os.remove(target)
+            if os.path.isdir(fpath): shutil.rmtree(fpath)
+            else: os.remove(fpath)
             deleted += 1
-        except Exception as e: errors.append(f"{name}: {e}")
-    srv["startup_file"] = ""
-    save_db(db)
-    return jsonify({"success": not errors, "message": f"🗑 تم حذف {deleted} عنصر", "deleted": deleted, "errors": errors})
-
-
-@app.route('/api/files/mkdir/<folder>', methods=['POST'])
-def create_folder_api(folder):
-    if "username" not in session:
-        return jsonify({"success": False, "message": "غير مصرح"}), 401
-    srv = db["servers"].get(folder)
-    if not srv or srv.get("owner") != session["username"]:
-        return jsonify({"success": False, "message": "غير مصرح"}), 403
-    data = request.get_json() or {}
-    name = safe_user_filename(data.get("name", "").strip())
-    if not name:
-        return jsonify({"success": False, "message": "اسم المجلد غير صالح"}), 400
-    target = os.path.join(srv["path"], name)
-    if os.path.exists(target):
-        return jsonify({"success": False, "message": "يوجد عنصر بهذا الاسم"}), 409
-    try:
-        os.makedirs(target, exist_ok=False)
-        return jsonify({"success": True, "message": f"📁 تم إنشاء المجلد {name}"})
-    except Exception as e:
-        return jsonify({"success": False, "message": str(e)}), 500
-
+        except Exception as e:
+            errors.append(f"{name}: {e}")
+    if deleted:
+        auto_detect_server_type(srv["path"], srv); save_db(db)
+    return jsonify({"success": deleted > 0, "message": f"🗑️ تم حذف {deleted} عنصر" if deleted else "لم يتم حذف أي عنصر", "deleted": deleted, "errors": errors})
 
 @app.route('/api/files/create/<folder>', methods=['POST'])
 def create_file_api(folder):
     if "username" not in session:
-        return jsonify({"success": False}), 401
+        return jsonify({"success": False, "message": "غير مصرح"}), 401
     srv = db["servers"].get(folder)
-    if not srv or srv["owner"] != session["username"]:
-        return jsonify({"success": False})
-    data = request.get_json()
+    if not srv or srv.get("owner") != session["username"]:
+        return jsonify({"success": False, "message": "غير مصرح"}), 403
+    data = request.get_json(silent=True) or {}
     filename = safe_user_filename(data.get("filename", "").strip())
     if not filename:
-        return jsonify({"success": False, "message": "اسم غير صالح"})
-    fpath = os.path.join(srv["path"], filename)
+        return jsonify({"success": False, "message": "اسم غير صالح"}), 400
+    is_folder = bool(data.get("is_folder"))
+    fpath = safe_server_path(srv["path"], filename, allow_dir=True)
+    if not fpath:
+        return jsonify({"success": False, "message": "مسار غير صالح"}), 400
+    if os.path.exists(fpath):
+        return jsonify({"success": False, "message": "يوجد ملف أو مجلد بهذا الاسم"}), 409
     try:
-        with open(fpath, 'w', encoding='utf-8') as f:
-            f.write(data.get("content", ""))
-        # كشف تلقائي بعد الإنشاء + حفظ
-        auto_detect_server_type(srv["path"], srv)
-        save_db(db)
-        return jsonify({"success": True, "message": f"✅ تم إنشاء {filename}"})
+        if is_folder:
+            os.makedirs(fpath, exist_ok=False)
+        else:
+            with open(fpath, 'w', encoding='utf-8') as f:
+                f.write(data.get("content", ""))
+        auto_detect_server_type(srv["path"], srv); save_db(db)
+        return jsonify({"success": True, "message": f"✅ تم إنشاء {'المجلد' if is_folder else 'الملف'} {filename}"})
     except Exception as e:
-        return jsonify({"success": False, "message": str(e)})
+        return jsonify({"success": False, "message": str(e)}), 500
 
 @app.route('/api/server/set-startup/<folder>', methods=['POST'])
 def set_startup_file(folder):
