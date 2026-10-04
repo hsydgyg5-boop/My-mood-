@@ -633,104 +633,6 @@ def ensure_python_environment(srv_path, log_file=None):
         return sys.executable
 
 
-
-# ============== Node.js Runtime ذاتي الإصلاح ==============
-NODE_VERSION = os.environ.get("MAZAGI_NODE_VERSION", "22.16.0")
-NODE_RUNTIME_DIR = os.path.join(DATA_DIR, "runtime", "node")
-
-def _node_arch():
-    machine = (os.uname().machine if hasattr(os, "uname") else "x86_64").lower()
-    if machine in ("aarch64", "arm64"):
-        return "arm64"
-    if machine in ("x86_64", "amd64"):
-        return "x64"
-    return None
-
-def _find_executable(names):
-    for name in names:
-        found = shutil.which(name)
-        if found:
-            return found
-    candidates = []
-    if os.environ.get("NVM_BIN"):
-        candidates.append(os.environ["NVM_BIN"])
-    candidates += ["/usr/local/bin", "/usr/bin", "/bin", "/opt/node/bin", "/opt/nvm/current/bin"]
-    for base in ("/root/.nvm/versions/node", "/home/node/.nvm/versions/node", "/opt/nvm/versions/node"):
-        if os.path.isdir(base):
-            try:
-                for ver in sorted(os.listdir(base), reverse=True):
-                    candidates.append(os.path.join(base, ver, "bin"))
-            except Exception:
-                pass
-    for directory in candidates:
-        for name in names:
-            path = os.path.join(directory, name)
-            if os.path.isfile(path) and os.access(path, os.X_OK):
-                return path
-    return None
-
-def ensure_node_runtime(log_file=None):
-    """يضمن Node/npm حتى في صورة Python. يستخدم النظام أولاً، ثم يجهز Node الرسمي داخل /data."""
-    node = _find_executable(["node"])
-    npm = _find_executable(["npm"])
-    if node and npm:
-        return node, npm
-    arch = _node_arch()
-    if not arch:
-        raise RuntimeError("معمارية النظام غير مدعومة لتشغيل Node.js تلقائياً")
-    import urllib.request
-    import tarfile
-    base = f"node-v{NODE_VERSION}-linux-{arch}"
-    runtime_root = os.path.join(NODE_RUNTIME_DIR, base)
-    node_path = os.path.join(runtime_root, "bin", "node")
-    npm_path = os.path.join(runtime_root, "bin", "npm")
-    if not (os.path.isfile(node_path) and os.path.isfile(npm_path)):
-        os.makedirs(NODE_RUNTIME_DIR, exist_ok=True)
-        archive = os.path.join(NODE_RUNTIME_DIR, base + ".tar.xz")
-        url = f"https://nodejs.org/dist/v{NODE_VERSION}/{base}.tar.xz"
-        if log_file:
-            log_file.write(f"\n🧰 Node.js غير موجود — جاري تجهيز Node.js {NODE_VERSION} تلقائياً...\n")
-            log_file.write(f"📥 المصدر الرسمي: {url}\n")
-            log_file.flush()
-        try:
-            if not os.path.exists(archive):
-                req = urllib.request.Request(url, headers={"User-Agent": "Mazagi-Host/2026"})
-                with urllib.request.urlopen(req, timeout=90) as response, open(archive, "wb") as out:
-                    shutil.copyfileobj(response, out)
-            extract_tmp = os.path.join(NODE_RUNTIME_DIR, ".extracting")
-            shutil.rmtree(extract_tmp, ignore_errors=True)
-            os.makedirs(extract_tmp, exist_ok=True)
-            with tarfile.open(archive, "r:xz") as tf:
-                tf.extractall(extract_tmp)
-            extracted = os.path.join(extract_tmp, base)
-            if not os.path.isdir(extracted):
-                raise RuntimeError("ملف Node.js المضغوط غير صالح")
-            shutil.rmtree(runtime_root, ignore_errors=True)
-            shutil.move(extracted, runtime_root)
-            shutil.rmtree(extract_tmp, ignore_errors=True)
-            try: os.remove(archive)
-            except Exception: pass
-        except Exception as exc:
-            raise RuntimeError(f"تعذر تجهيز Node.js تلقائياً: {exc}")
-    if not os.path.isfile(node_path):
-        raise RuntimeError("تم تجهيز Node.js لكن ملف التشغيل غير موجود")
-    if not os.path.isfile(npm_path):
-        npm_cli = os.path.join(runtime_root, "lib", "node_modules", "npm", "bin", "npm-cli.js")
-        if os.path.isfile(npm_cli):
-            npm_path = npm_cli
-        else:
-            raise RuntimeError("تم تجهيز Node.js لكن npm غير موجود")
-    if log_file:
-        log_file.write(f"✅ Node.js جاهز: {node_path}\n")
-        log_file.flush()
-    return node_path, npm_path
-
-def _node_env(node_path):
-    env = os.environ.copy()
-    node_bin = os.path.dirname(node_path)
-    env["PATH"] = node_bin + os.pathsep + env.get("PATH", "")
-    return env
-
 def auto_install_deps(srv_path: str, server_type: str, log_file):
     try:
         if server_type == "Node.js":
@@ -738,11 +640,8 @@ def auto_install_deps(srv_path: str, server_type: str, log_file):
             if os.path.exists(pkg):
                 log_file.write("\n📦 تثبيت node_modules تلقائياً...\n")
                 log_file.flush()
-                node_path, npm_path = ensure_node_runtime(log_file)
-                env = _node_env(node_path)
-                npm_cmd = [npm_path, "install"] if os.path.basename(npm_path) == "npm" else [node_path, npm_path, "install"]
-                proc = subprocess.Popen(npm_cmd, cwd=srv_path, stdout=log_file, stderr=subprocess.STDOUT, env=env)
-                proc.wait(timeout=600)
+                proc = subprocess.Popen(["npm", "install"], cwd=srv_path, stdout=log_file, stderr=subprocess.STDOUT, env=os.environ.copy())
+                proc.wait(timeout=300)
                 log_file.write("✅ تم تثبيت node_modules\n" if proc.returncode == 0 else "⚠️ فشل npm install\n")
         elif server_type == "Python":
             ensure_python_environment(srv_path, log_file)
@@ -776,31 +675,18 @@ def start_server_process(folder):
     if not main_file: return False,f'لا يوجد ملف تشغيل لـ {server_type}'
     file_path=os.path.join(srv_path,main_file)
     if server_type not in ('Java','Go','Rust') and not os.path.exists(file_path): return False,f"الملف '{main_file}' غير موجود"
-    # لا نستخدم المنفذ المحفوظ إذا صار مشغولاً أو لم يعد صالحاً.
-    saved_port = srv.get('port')
-    if saved_port:
-        try:
-            saved_port = int(saved_port)
-        except Exception:
-            saved_port = None
-    preferred = saved_port if saved_port and not _port_is_open(saved_port) else get_assigned_port()
-    srv['port'] = preferred
+    preferred=srv.get('port') or get_assigned_port(); srv['port']=preferred
     log_path=os.path.join(srv_path,'out.log'); error_path=os.path.join(srv_path,'errors.log')
     log_file=open(log_path,'a',encoding='utf-8'); log_file.write(f"\n{'='*60}\n🚀 بدء التشغيل {datetime.now()}\n📁 {main_file}\n🔌 المنفذ المطلوب: {preferred}\n🏷 النوع: {server_type}\n{'='*60}\n"); log_file.flush()
     env=os.environ.copy(); env.update(PORT=str(preferred),SERVER_PORT=str(preferred),HOST='0.0.0.0',HOSTNAME='0.0.0.0')
     try:
         if server_type=='Node.js':
-            node_path, npm_path = ensure_node_runtime(log_file)
-            env.update(_node_env(node_path))
             pkg=os.path.join(srv_path,'package.json')
             use_npm=False
             if os.path.exists(pkg):
                 try: use_npm=bool(json.load(open(pkg,encoding='utf-8')).get('scripts',{}).get('start'))
                 except Exception: pass
-            if use_npm:
-                cmd=[npm_path,'run','start'] if os.path.basename(npm_path) == 'npm' else [node_path,npm_path,'run','start']
-            else:
-                cmd=[node_path,main_file]
+            cmd=['npm','run','start'] if use_npm else ['node',main_file]
         elif server_type=='PHP': cmd=['php','-S',f'0.0.0.0:{preferred}','-t',srv_path]
         elif server_type=='Ruby': cmd=['bundle','exec','rackup','-o','0.0.0.0','-p',str(preferred)] if main_file=='config.ru' and shutil.which('bundle') else ['ruby',main_file]
         elif server_type=='Java':
@@ -819,30 +705,22 @@ def start_server_process(folder):
             cmd=[python_bin,'-u',main_file]
         proc=subprocess.Popen(cmd,cwd=srv_path,stdout=log_file,stderr=open(error_path,'a',encoding='utf-8'),env=env,preexec_fn=os.setsid if hasattr(os,'setsid') else None)
         srv.update(pid=proc.pid,status='Starting',start_time=time.time()); save_db(db)
-
-        # مهم جداً: لا نرجع للمستخدم بحالة تشغيل قبل أن يكون المنفذ قابلاً
-        # للاتصال. هذا يمنع خطأ Railway/Flask: 127.0.0.1:8100 Connection refused
-        # عند الضغط على «فتح» مباشرة بعد «تشغيل».
-        actual=discover_running_port(proc.pid,preferred,35)
-        if actual:
-            srv.update(port=actual,status='Running',pid=proc.pid)
-            save_db(db)
-            with open(log_path,'a',encoding='utf-8') as lf:
-                lf.write(f'\n✅ الموقع أصبح جاهزاً ويستمع فعلياً على المنفذ {actual}\n')
-            return True,f'🚀 تم التشغيل بنجاح — المنفذ {actual}'
-
-        if proc.poll() is not None:
-            code=proc.returncode
-            srv.update(status='Stopped',pid=None)
-            save_db(db)
-            with open(log_path,'a',encoding='utf-8') as lf:
-                lf.write(f'\n❌ انتهت العملية برمز {code}; راجع errors.log وout.log\n')
-            return False,f'❌ المشروع توقف قبل فتح منفذ HTTP (code={code}). راجع errors.log'
-
-        # العملية ما زالت تعمل لكن لم يظهر منفذ. لا نخزن 8100 كمنفذ صالح.
-        srv.update(status='Starting',pid=proc.pid,port=preferred)
-        save_db(db)
-        return True,'⏳ المشروع ما زال يبدأ؛ جرّب فتحه بعد ثوانٍ قليلة'
+        def settle():
+            actual=discover_running_port(proc.pid,preferred,30)
+            try:
+                if actual:
+                    srv.update(port=actual,status='Running')
+                    with open(log_path,'a',encoding='utf-8') as lf: lf.write(f'\n✅ الموقع يستمع فعلياً على المنفذ {actual}\n')
+                elif proc.poll() is not None:
+                    srv.update(status='Stopped',pid=None)
+                    with open(log_path,'a',encoding='utf-8') as lf: lf.write(f'\n❌ انتهت العملية برمز {proc.returncode}; راجع errors.log\n')
+                else:
+                    srv['status']='Running'
+                    with open(log_path,'a',encoding='utf-8') as lf: lf.write('\nℹ️ العملية تعمل لكن لم يتم اكتشاف منفذ HTTP.\n')
+                save_db(db)
+            except Exception: pass
+        threading.Thread(target=settle,daemon=True).start()
+        return True,'🚀 بدأ التشغيل — يتم اكتشاف المنفذ الحقيقي تلقائياً'
     except FileNotFoundError:
         srv.update(status='Stopped',pid=None); save_db(db); return False,f'❌ المشغّل غير موجود لهذا النوع: {server_type}'
     except Exception as e:
@@ -1514,30 +1392,13 @@ def proxy_user_site(folder,subpath):
     if not port: return 'لم يتم اكتشاف منفذ HTTP لهذا المشروع. إذا كان المشروع بوتاً فقط فلا يوجد موقع لفتحه.',503
     target_path='/'+subpath
     if request.query_string: target_path+='?'+request.query_string.decode('utf-8',errors='ignore')
-    last_error = None
-    # المحاولة الأولى بالمنفذ المسجل، ثم إعادة اكتشاف المنفذ الحقيقي من PID
-    # إذا أعيد تشغيل المشروع أو تأخر فتح المنفذ.
-    for attempt in range(2):
-        try:
-            upstream=requests.request(request.method,f'http://127.0.0.1:{int(port)}{target_path}',headers={k:v for k,v in request.headers.items() if k.lower() not in {'host','content-length'}},data=request.get_data(),cookies=request.cookies,allow_redirects=False,timeout=45,stream=True)
-            # إذا نجحت المحاولة، صحح المنفذ المخزن إن كان قد تغير.
-            if srv.get('port') != int(port):
-                srv['port'] = int(port); save_db(db)
-            headers=_proxy_headers(upstream,prefix); ctype=upstream.headers.get('Content-Type','')
-            if 'text/html' in ctype:
-                raw=upstream.content.decode(upstream.encoding or 'utf-8',errors='replace'); return Response(_rewrite_site_html(raw,prefix),status=upstream.status_code,headers=headers,content_type='text/html; charset=utf-8')
-            return Response(upstream.iter_content(chunk_size=8192),status=upstream.status_code,headers=headers)
-        except Exception as e:
-            last_error = e
-            if attempt == 0 and srv.get('pid'):
-                actual = discover_running_port(int(srv['pid']), None, 5)
-                if actual:
-                    port = actual
-                    srv['port'] = actual
-                    srv['status'] = 'Running'
-                    save_db(db)
-                    continue
-    return f'تعذر فتح الموقع: {last_error}',502
+    try:
+        upstream=requests.request(request.method,f'http://127.0.0.1:{int(port)}{target_path}',headers={k:v for k,v in request.headers.items() if k.lower() not in {'host','content-length'}},data=request.get_data(),cookies=request.cookies,allow_redirects=False,timeout=45,stream=True)
+        headers=_proxy_headers(upstream,prefix); ctype=upstream.headers.get('Content-Type','')
+        if 'text/html' in ctype:
+            raw=upstream.content.decode(upstream.encoding or 'utf-8',errors='replace'); return Response(_rewrite_site_html(raw,prefix),status=upstream.status_code,headers=headers,content_type='text/html; charset=utf-8')
+        return Response(upstream.iter_content(chunk_size=8192),status=upstream.status_code,headers=headers)
+    except Exception as e: return f'تعذر فتح الموقع: {e}',502
 
 @app.route('/api/servers')
 def list_servers():
@@ -2305,16 +2166,12 @@ def install_requirements(folder):
         try:
             with open(log_path, "a", encoding='utf-8') as lf:
                 lf.write(f"\n{'='*50}\n📦 تثبيت Node.js...\n{'='*50}\n")
-            with open(log_path, "a", encoding='utf-8') as lf:
-                node_path, npm_path = ensure_node_runtime(lf)
-            env = _node_env(node_path)
-            cmd = [npm_path, "install"] if os.path.basename(npm_path) == "npm" else [node_path, npm_path, "install"]
+            cmd = ["npm", "install"]
             proc = subprocess.Popen(
                 cmd,
                 cwd=srv["path"],
                 stdout=open(log_path, "a", encoding='utf-8'),
-                stderr=subprocess.STDOUT,
-                env=env
+                stderr=subprocess.STDOUT
             )
             def wait_install():
                 proc.wait()
@@ -2372,16 +2229,6 @@ def install_requirements(folder):
             return jsonify({"success": True, "message": "📦 بدأ تثبيت Python dependencies"})
         except Exception as e:
             return jsonify({"success": False, "message": str(e)})
-
-# ============== فحص Runtime ==============
-@app.route('/api/runtime/health')
-def runtime_health():
-    try:
-        node, npm = ensure_node_runtime()
-        version = subprocess.check_output([node, "--version"], text=True, timeout=10).strip()
-        return jsonify({"success": True, "node": node, "npm": npm, "version": version})
-    except Exception as e:
-        return jsonify({"success": False, "message": str(e)}), 503
 
 # ============== API البوت ==============
 @app.route('/api/bot/verify', methods=['POST'])
