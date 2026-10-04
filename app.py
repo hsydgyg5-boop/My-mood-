@@ -776,7 +776,15 @@ def start_server_process(folder):
     if not main_file: return False,f'لا يوجد ملف تشغيل لـ {server_type}'
     file_path=os.path.join(srv_path,main_file)
     if server_type not in ('Java','Go','Rust') and not os.path.exists(file_path): return False,f"الملف '{main_file}' غير موجود"
-    preferred=srv.get('port') or get_assigned_port(); srv['port']=preferred
+    # لا نستخدم المنفذ المحفوظ إذا صار مشغولاً أو لم يعد صالحاً.
+    saved_port = srv.get('port')
+    if saved_port:
+        try:
+            saved_port = int(saved_port)
+        except Exception:
+            saved_port = None
+    preferred = saved_port if saved_port and not _port_is_open(saved_port) else get_assigned_port()
+    srv['port'] = preferred
     log_path=os.path.join(srv_path,'out.log'); error_path=os.path.join(srv_path,'errors.log')
     log_file=open(log_path,'a',encoding='utf-8'); log_file.write(f"\n{'='*60}\n🚀 بدء التشغيل {datetime.now()}\n📁 {main_file}\n🔌 المنفذ المطلوب: {preferred}\n🏷 النوع: {server_type}\n{'='*60}\n"); log_file.flush()
     env=os.environ.copy(); env.update(PORT=str(preferred),SERVER_PORT=str(preferred),HOST='0.0.0.0',HOSTNAME='0.0.0.0')
@@ -811,22 +819,30 @@ def start_server_process(folder):
             cmd=[python_bin,'-u',main_file]
         proc=subprocess.Popen(cmd,cwd=srv_path,stdout=log_file,stderr=open(error_path,'a',encoding='utf-8'),env=env,preexec_fn=os.setsid if hasattr(os,'setsid') else None)
         srv.update(pid=proc.pid,status='Starting',start_time=time.time()); save_db(db)
-        def settle():
-            actual=discover_running_port(proc.pid,preferred,30)
-            try:
-                if actual:
-                    srv.update(port=actual,status='Running')
-                    with open(log_path,'a',encoding='utf-8') as lf: lf.write(f'\n✅ الموقع يستمع فعلياً على المنفذ {actual}\n')
-                elif proc.poll() is not None:
-                    srv.update(status='Stopped',pid=None)
-                    with open(log_path,'a',encoding='utf-8') as lf: lf.write(f'\n❌ انتهت العملية برمز {proc.returncode}; راجع errors.log\n')
-                else:
-                    srv['status']='Running'
-                    with open(log_path,'a',encoding='utf-8') as lf: lf.write('\nℹ️ العملية تعمل لكن لم يتم اكتشاف منفذ HTTP.\n')
-                save_db(db)
-            except Exception: pass
-        threading.Thread(target=settle,daemon=True).start()
-        return True,'🚀 بدأ التشغيل — يتم اكتشاف المنفذ الحقيقي تلقائياً'
+
+        # مهم جداً: لا نرجع للمستخدم بحالة تشغيل قبل أن يكون المنفذ قابلاً
+        # للاتصال. هذا يمنع خطأ Railway/Flask: 127.0.0.1:8100 Connection refused
+        # عند الضغط على «فتح» مباشرة بعد «تشغيل».
+        actual=discover_running_port(proc.pid,preferred,35)
+        if actual:
+            srv.update(port=actual,status='Running',pid=proc.pid)
+            save_db(db)
+            with open(log_path,'a',encoding='utf-8') as lf:
+                lf.write(f'\n✅ الموقع أصبح جاهزاً ويستمع فعلياً على المنفذ {actual}\n')
+            return True,f'🚀 تم التشغيل بنجاح — المنفذ {actual}'
+
+        if proc.poll() is not None:
+            code=proc.returncode
+            srv.update(status='Stopped',pid=None)
+            save_db(db)
+            with open(log_path,'a',encoding='utf-8') as lf:
+                lf.write(f'\n❌ انتهت العملية برمز {code}; راجع errors.log وout.log\n')
+            return False,f'❌ المشروع توقف قبل فتح منفذ HTTP (code={code}). راجع errors.log'
+
+        # العملية ما زالت تعمل لكن لم يظهر منفذ. لا نخزن 8100 كمنفذ صالح.
+        srv.update(status='Starting',pid=proc.pid,port=preferred)
+        save_db(db)
+        return True,'⏳ المشروع ما زال يبدأ؛ جرّب فتحه بعد ثوانٍ قليلة'
     except FileNotFoundError:
         srv.update(status='Stopped',pid=None); save_db(db); return False,f'❌ المشغّل غير موجود لهذا النوع: {server_type}'
     except Exception as e:
@@ -1498,13 +1514,30 @@ def proxy_user_site(folder,subpath):
     if not port: return 'لم يتم اكتشاف منفذ HTTP لهذا المشروع. إذا كان المشروع بوتاً فقط فلا يوجد موقع لفتحه.',503
     target_path='/'+subpath
     if request.query_string: target_path+='?'+request.query_string.decode('utf-8',errors='ignore')
-    try:
-        upstream=requests.request(request.method,f'http://127.0.0.1:{int(port)}{target_path}',headers={k:v for k,v in request.headers.items() if k.lower() not in {'host','content-length'}},data=request.get_data(),cookies=request.cookies,allow_redirects=False,timeout=45,stream=True)
-        headers=_proxy_headers(upstream,prefix); ctype=upstream.headers.get('Content-Type','')
-        if 'text/html' in ctype:
-            raw=upstream.content.decode(upstream.encoding or 'utf-8',errors='replace'); return Response(_rewrite_site_html(raw,prefix),status=upstream.status_code,headers=headers,content_type='text/html; charset=utf-8')
-        return Response(upstream.iter_content(chunk_size=8192),status=upstream.status_code,headers=headers)
-    except Exception as e: return f'تعذر فتح الموقع: {e}',502
+    last_error = None
+    # المحاولة الأولى بالمنفذ المسجل، ثم إعادة اكتشاف المنفذ الحقيقي من PID
+    # إذا أعيد تشغيل المشروع أو تأخر فتح المنفذ.
+    for attempt in range(2):
+        try:
+            upstream=requests.request(request.method,f'http://127.0.0.1:{int(port)}{target_path}',headers={k:v for k,v in request.headers.items() if k.lower() not in {'host','content-length'}},data=request.get_data(),cookies=request.cookies,allow_redirects=False,timeout=45,stream=True)
+            # إذا نجحت المحاولة، صحح المنفذ المخزن إن كان قد تغير.
+            if srv.get('port') != int(port):
+                srv['port'] = int(port); save_db(db)
+            headers=_proxy_headers(upstream,prefix); ctype=upstream.headers.get('Content-Type','')
+            if 'text/html' in ctype:
+                raw=upstream.content.decode(upstream.encoding or 'utf-8',errors='replace'); return Response(_rewrite_site_html(raw,prefix),status=upstream.status_code,headers=headers,content_type='text/html; charset=utf-8')
+            return Response(upstream.iter_content(chunk_size=8192),status=upstream.status_code,headers=headers)
+        except Exception as e:
+            last_error = e
+            if attempt == 0 and srv.get('pid'):
+                actual = discover_running_port(int(srv['pid']), None, 5)
+                if actual:
+                    port = actual
+                    srv['port'] = actual
+                    srv['status'] = 'Running'
+                    save_db(db)
+                    continue
+    return f'تعذر فتح الموقع: {last_error}',502
 
 @app.route('/api/servers')
 def list_servers():
