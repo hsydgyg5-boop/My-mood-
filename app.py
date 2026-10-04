@@ -633,6 +633,104 @@ def ensure_python_environment(srv_path, log_file=None):
         return sys.executable
 
 
+
+# ============== Node.js Runtime ذاتي الإصلاح ==============
+NODE_VERSION = os.environ.get("MAZAGI_NODE_VERSION", "22.16.0")
+NODE_RUNTIME_DIR = os.path.join(DATA_DIR, "runtime", "node")
+
+def _node_arch():
+    machine = (os.uname().machine if hasattr(os, "uname") else "x86_64").lower()
+    if machine in ("aarch64", "arm64"):
+        return "arm64"
+    if machine in ("x86_64", "amd64"):
+        return "x64"
+    return None
+
+def _find_executable(names):
+    for name in names:
+        found = shutil.which(name)
+        if found:
+            return found
+    candidates = []
+    if os.environ.get("NVM_BIN"):
+        candidates.append(os.environ["NVM_BIN"])
+    candidates += ["/usr/local/bin", "/usr/bin", "/bin", "/opt/node/bin", "/opt/nvm/current/bin"]
+    for base in ("/root/.nvm/versions/node", "/home/node/.nvm/versions/node", "/opt/nvm/versions/node"):
+        if os.path.isdir(base):
+            try:
+                for ver in sorted(os.listdir(base), reverse=True):
+                    candidates.append(os.path.join(base, ver, "bin"))
+            except Exception:
+                pass
+    for directory in candidates:
+        for name in names:
+            path = os.path.join(directory, name)
+            if os.path.isfile(path) and os.access(path, os.X_OK):
+                return path
+    return None
+
+def ensure_node_runtime(log_file=None):
+    """يضمن Node/npm حتى في صورة Python. يستخدم النظام أولاً، ثم يجهز Node الرسمي داخل /data."""
+    node = _find_executable(["node"])
+    npm = _find_executable(["npm"])
+    if node and npm:
+        return node, npm
+    arch = _node_arch()
+    if not arch:
+        raise RuntimeError("معمارية النظام غير مدعومة لتشغيل Node.js تلقائياً")
+    import urllib.request
+    import tarfile
+    base = f"node-v{NODE_VERSION}-linux-{arch}"
+    runtime_root = os.path.join(NODE_RUNTIME_DIR, base)
+    node_path = os.path.join(runtime_root, "bin", "node")
+    npm_path = os.path.join(runtime_root, "bin", "npm")
+    if not (os.path.isfile(node_path) and os.path.isfile(npm_path)):
+        os.makedirs(NODE_RUNTIME_DIR, exist_ok=True)
+        archive = os.path.join(NODE_RUNTIME_DIR, base + ".tar.xz")
+        url = f"https://nodejs.org/dist/v{NODE_VERSION}/{base}.tar.xz"
+        if log_file:
+            log_file.write(f"\n🧰 Node.js غير موجود — جاري تجهيز Node.js {NODE_VERSION} تلقائياً...\n")
+            log_file.write(f"📥 المصدر الرسمي: {url}\n")
+            log_file.flush()
+        try:
+            if not os.path.exists(archive):
+                req = urllib.request.Request(url, headers={"User-Agent": "Mazagi-Host/2026"})
+                with urllib.request.urlopen(req, timeout=90) as response, open(archive, "wb") as out:
+                    shutil.copyfileobj(response, out)
+            extract_tmp = os.path.join(NODE_RUNTIME_DIR, ".extracting")
+            shutil.rmtree(extract_tmp, ignore_errors=True)
+            os.makedirs(extract_tmp, exist_ok=True)
+            with tarfile.open(archive, "r:xz") as tf:
+                tf.extractall(extract_tmp)
+            extracted = os.path.join(extract_tmp, base)
+            if not os.path.isdir(extracted):
+                raise RuntimeError("ملف Node.js المضغوط غير صالح")
+            shutil.rmtree(runtime_root, ignore_errors=True)
+            shutil.move(extracted, runtime_root)
+            shutil.rmtree(extract_tmp, ignore_errors=True)
+            try: os.remove(archive)
+            except Exception: pass
+        except Exception as exc:
+            raise RuntimeError(f"تعذر تجهيز Node.js تلقائياً: {exc}")
+    if not os.path.isfile(node_path):
+        raise RuntimeError("تم تجهيز Node.js لكن ملف التشغيل غير موجود")
+    if not os.path.isfile(npm_path):
+        npm_cli = os.path.join(runtime_root, "lib", "node_modules", "npm", "bin", "npm-cli.js")
+        if os.path.isfile(npm_cli):
+            npm_path = npm_cli
+        else:
+            raise RuntimeError("تم تجهيز Node.js لكن npm غير موجود")
+    if log_file:
+        log_file.write(f"✅ Node.js جاهز: {node_path}\n")
+        log_file.flush()
+    return node_path, npm_path
+
+def _node_env(node_path):
+    env = os.environ.copy()
+    node_bin = os.path.dirname(node_path)
+    env["PATH"] = node_bin + os.pathsep + env.get("PATH", "")
+    return env
+
 def auto_install_deps(srv_path: str, server_type: str, log_file):
     try:
         if server_type == "Node.js":
@@ -640,8 +738,11 @@ def auto_install_deps(srv_path: str, server_type: str, log_file):
             if os.path.exists(pkg):
                 log_file.write("\n📦 تثبيت node_modules تلقائياً...\n")
                 log_file.flush()
-                proc = subprocess.Popen(["npm", "install"], cwd=srv_path, stdout=log_file, stderr=subprocess.STDOUT, env=os.environ.copy())
-                proc.wait(timeout=300)
+                node_path, npm_path = ensure_node_runtime(log_file)
+                env = _node_env(node_path)
+                npm_cmd = [npm_path, "install"] if os.path.basename(npm_path) == "npm" else [node_path, npm_path, "install"]
+                proc = subprocess.Popen(npm_cmd, cwd=srv_path, stdout=log_file, stderr=subprocess.STDOUT, env=env)
+                proc.wait(timeout=600)
                 log_file.write("✅ تم تثبيت node_modules\n" if proc.returncode == 0 else "⚠️ فشل npm install\n")
         elif server_type == "Python":
             ensure_python_environment(srv_path, log_file)
@@ -681,12 +782,17 @@ def start_server_process(folder):
     env=os.environ.copy(); env.update(PORT=str(preferred),SERVER_PORT=str(preferred),HOST='0.0.0.0',HOSTNAME='0.0.0.0')
     try:
         if server_type=='Node.js':
+            node_path, npm_path = ensure_node_runtime(log_file)
+            env.update(_node_env(node_path))
             pkg=os.path.join(srv_path,'package.json')
             use_npm=False
             if os.path.exists(pkg):
                 try: use_npm=bool(json.load(open(pkg,encoding='utf-8')).get('scripts',{}).get('start'))
                 except Exception: pass
-            cmd=['npm','run','start'] if use_npm else ['node',main_file]
+            if use_npm:
+                cmd=[npm_path,'run','start'] if os.path.basename(npm_path) == 'npm' else [node_path,npm_path,'run','start']
+            else:
+                cmd=[node_path,main_file]
         elif server_type=='PHP': cmd=['php','-S',f'0.0.0.0:{preferred}','-t',srv_path]
         elif server_type=='Ruby': cmd=['bundle','exec','rackup','-o','0.0.0.0','-p',str(preferred)] if main_file=='config.ru' and shutil.which('bundle') else ['ruby',main_file]
         elif server_type=='Java':
@@ -2166,12 +2272,16 @@ def install_requirements(folder):
         try:
             with open(log_path, "a", encoding='utf-8') as lf:
                 lf.write(f"\n{'='*50}\n📦 تثبيت Node.js...\n{'='*50}\n")
-            cmd = ["npm", "install"]
+            with open(log_path, "a", encoding='utf-8') as lf:
+                node_path, npm_path = ensure_node_runtime(lf)
+            env = _node_env(node_path)
+            cmd = [npm_path, "install"] if os.path.basename(npm_path) == "npm" else [node_path, npm_path, "install"]
             proc = subprocess.Popen(
                 cmd,
                 cwd=srv["path"],
                 stdout=open(log_path, "a", encoding='utf-8'),
-                stderr=subprocess.STDOUT
+                stderr=subprocess.STDOUT,
+                env=env
             )
             def wait_install():
                 proc.wait()
@@ -2229,6 +2339,16 @@ def install_requirements(folder):
             return jsonify({"success": True, "message": "📦 بدأ تثبيت Python dependencies"})
         except Exception as e:
             return jsonify({"success": False, "message": str(e)})
+
+# ============== فحص Runtime ==============
+@app.route('/api/runtime/health')
+def runtime_health():
+    try:
+        node, npm = ensure_node_runtime()
+        version = subprocess.check_output([node, "--version"], text=True, timeout=10).strip()
+        return jsonify({"success": True, "node": node, "npm": npm, "version": version})
+    except Exception as e:
+        return jsonify({"success": False, "message": str(e)}), 503
 
 # ============== API البوت ==============
 @app.route('/api/bot/verify', methods=['POST'])
