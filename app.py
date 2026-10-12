@@ -22,23 +22,42 @@ from datetime import datetime, timedelta
 from flask import Flask, send_from_directory, send_file, request, jsonify, session, redirect, make_response, Response
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-# التخزين الدائم: نستخدم مسار Railway Volume إذا كان موجوداً.
-# مهم: لا نستخدم db.json الموجود داخل المشروع كمصدر لبيانات المستخدمين.
-DATA_DIR = (os.environ.get("MAZAGI_DATA_DIR") or
-            os.environ.get("RAILWAY_VOLUME_MOUNT_PATH") or
-            "/data")
+# Railway يحقن RAILWAY_VOLUME_MOUNT_PATH عند ربط Volume بالخدمة.
+# لا يكفي ربط GitHub وحده للحفظ بين النشرات؛ كل ملفات المستخدمين وقاعدة البيانات تذهب إلى هذا المسار.
+RAILWAY_VOLUME_MOUNT_PATH = (os.environ.get("RAILWAY_VOLUME_MOUNT_PATH") or "").strip()
+EXPLICIT_DATA_DIR = (os.environ.get("MAZAGI_DATA_DIR") or "").strip()
+IS_RAILWAY_RUNTIME = any(os.environ.get(k) for k in (
+    "RAILWAY_ENVIRONMENT", "RAILWAY_ENVIRONMENT_ID", "RAILWAY_PROJECT_ID", "RAILWAY_SERVICE_ID", "RAILWAY_VOLUME_MOUNT_PATH"
+))
+DATA_DIR = EXPLICIT_DATA_DIR or RAILWAY_VOLUME_MOUNT_PATH or ("/data" if IS_RAILWAY_RUNTIME else os.path.join(BASE_DIR, "data"))
 try:
     os.makedirs(DATA_DIR, exist_ok=True)
+except Exception as exc:
+    print(f"❌ تعذر فتح مجلد البيانات {DATA_DIR}: {exc}", flush=True)
+    DATA_DIR = os.path.join(BASE_DIR, "data")
+    os.makedirs(DATA_DIR, exist_ok=True)
+    IS_RAILWAY_RUNTIME = IS_RAILWAY_RUNTIME
+
+# نعد التخزين محفوظاً عبر النشرات في Railway فقط عندما يعلن Railway مسار الـ Volume تلقائياً
+# ويطابق المسار المستخدم فعلياً. هذا يمنع اعتبار مجلد الحاوية المؤقت تخزيناً دائماً بالخطأ.
+try:
+    PERSISTENT_STORAGE_CONFIGURED = (not IS_RAILWAY_RUNTIME) or bool(
+        RAILWAY_VOLUME_MOUNT_PATH and os.path.abspath(DATA_DIR) == os.path.abspath(RAILWAY_VOLUME_MOUNT_PATH)
+    )
 except Exception:
-    DATA_DIR = BASE_DIR
+    PERSISTENT_STORAGE_CONFIGURED = not IS_RAILWAY_RUNTIME
+if IS_RAILWAY_RUNTIME and not PERSISTENT_STORAGE_CONFIGURED:
+    print("⚠️ تنبيه تخزين: لم يتم اكتشاف Railway Volume مربوط بالخدمة. قد تُفقد قاعدة البيانات وملفات المستخدمين عند إعادة النشر. اربط Volume بمسار /data.", flush=True)
+
 USERS_DIR = os.path.join(DATA_DIR, "USERS")
 os.makedirs(USERS_DIR, exist_ok=True)
 
-# مجلد PHP
+# مجلد PHP داخل التخزين الدائم نفسه.
 PHP_DIR = os.path.join(DATA_DIR, "php_files")
 os.makedirs(PHP_DIR, exist_ok=True)
 
-app = Flask(__name__, static_folder=BASE_DIR)
+# منع Flask من نشر ملفات جذر المشروع (/static/app.py أو config) تلقائياً.
+app = Flask(__name__, static_folder=None)
 app.secret_key = "MERO_HOST_STABLE_SECRET_2026_XK9"
 app.config['PERMANENT_SESSION_LIFETIME'] = timedelta(days=30)
 app.config['MAX_CONTENT_LENGTH'] = 500 * 1024 * 1024
@@ -191,18 +210,8 @@ def save_db(db_data):
             f.flush()
             os.fsync(f.fileno())
         os.replace(tmp_file, DB_FILE)
-        # نسخة داخل المشروع للاحتفاظ بلقطة من قاعدة البيانات عند نقل/رفع المشروع.
-        # لا تُستخدم إذا كانت قاعدة /data موجودة، ولا تستبدلها أبداً.
-        try:
-            portable_dir = os.path.join(BASE_DIR, "portable_data")
-            os.makedirs(portable_dir, exist_ok=True)
-            portable_tmp = os.path.join(portable_dir, "db.json.tmp")
-            with open(portable_tmp, 'w', encoding='utf-8') as pf:
-                json.dump(db_data, pf, indent=4, ensure_ascii=False)
-                pf.flush(); os.fsync(pf.fileno())
-            os.replace(portable_tmp, os.path.join(portable_dir, "db.json"))
-        except Exception:
-            pass
+        # لا ننسخ قاعدة البيانات الحية إلى مجلد الكود؛ مصدر الحقيقة الوحيد هو DATA_DIR/db.json.
+        # هذا يمنع إدخال بيانات المستخدمين والأرصدة ضمن حزمة الكود التي يعاد نشرها.
         return True
     except Exception as e:
         print(f"❌ خطأ في حفظ DB: {e}")
@@ -244,9 +253,12 @@ def safe_relative_path(base, name):
         parts.append(part)
     if not parts:
         return None
-    base_abs = os.path.abspath(base)
-    path_abs = os.path.abspath(os.path.join(base_abs, *parts))
-    if os.path.commonpath([base_abs, path_abs]) != base_abs:
+    base_abs = os.path.realpath(os.path.abspath(base))
+    path_abs = os.path.realpath(os.path.abspath(os.path.join(base_abs, *parts)))
+    try:
+        if os.path.commonpath([base_abs, path_abs]) != base_abs:
+            return None
+    except ValueError:
         return None
     return path_abs
 
@@ -274,15 +286,30 @@ def _safe_server_dir(owner, folder):
     return os.path.join(USERS_DIR, owner, "SERVERS", folder)
 
 def _copy_tree_if_needed(src, dst):
+    """استعادة غير مدمرة: انسخ الملفات الناقصة فقط، ولا تستبدل أي ملف موجود على الـ Volume."""
     try:
-        if not src or not os.path.exists(src) or os.path.exists(dst):
+        if not src or not os.path.exists(src):
             return False
-        os.makedirs(os.path.dirname(dst), exist_ok=True)
+        changed = False
         if os.path.isdir(src):
-            shutil.copytree(src, dst, dirs_exist_ok=True)
-        else:
+            os.makedirs(dst, exist_ok=True)
+            for root, dirs, files in os.walk(src):
+                rel = os.path.relpath(root, src)
+                target_root = dst if rel == "." else os.path.join(dst, rel)
+                os.makedirs(target_root, exist_ok=True)
+                for directory in dirs:
+                    os.makedirs(os.path.join(target_root, directory), exist_ok=True)
+                for filename in files:
+                    source_file = os.path.join(root, filename)
+                    target_file = os.path.join(target_root, filename)
+                    if not os.path.exists(target_file):
+                        shutil.copy2(source_file, target_file)
+                        changed = True
+        elif not os.path.exists(dst):
+            os.makedirs(os.path.dirname(dst), exist_ok=True)
             shutil.copy2(src, dst)
-        return True
+            changed = True
+        return changed
     except Exception as exc:
         print(f"⚠️ تعذر استرجاع الملفات من {src}: {exc}")
         return False
@@ -319,99 +346,202 @@ migrate_server_storage()
 
 # ============== كشف تلقائي لنوع السيرفر ==============
 def auto_detect_server_type(srv_path: str, srv: dict):
-    """كشف تلقائي لنوع السيرفر من الملفات الموجودة"""
-    if not os.path.exists(srv_path):
-        return
-    
+    """اكتشاف نوع المشروع مع تفضيل تطبيقات الويب الحقيقية والمواقع الثابتة بدقة."""
+    if not os.path.isdir(srv_path):
+        return False
     try:
-        files = os.listdir(srv_path)
-        php_files = [f for f in files if f.endswith('.php')]
-        js_files = [f for f in files if f.endswith('.js')]
-        py_files = [f for f in files if f.endswith('.py')]
-        
-        if php_files:
-            changed = srv.get("type") != "PHP" or not srv.get("startup_file") or not os.path.exists(os.path.join(srv_path, srv.get("startup_file", "")))
-            if changed:
-                srv["type"] = "PHP"; srv["startup_file"] = srv.get("startup_file") if srv.get("startup_file") in php_files else php_files[0]; save_db(db)
-                return True
-        if js_files:
-            changed = srv.get("type") != "Node.js" or not srv.get("startup_file") or not os.path.exists(os.path.join(srv_path, srv.get("startup_file", "")))
-            if changed:
-                srv["type"] = "Node.js"; srv["startup_file"] = srv.get("startup_file") if srv.get("startup_file") in js_files else js_files[0]; save_db(db)
-                return True
-        if py_files:
-            changed = srv.get("type") != "Python" or not srv.get("startup_file") or not os.path.exists(os.path.join(srv_path, srv.get("startup_file", "")))
-            if changed:
-                srv["type"] = "Python"; srv["startup_file"] = srv.get("startup_file") if srv.get("startup_file") in py_files else py_files[0]; save_db(db)
-                return True
+        detected = detect_project_type(srv_path)
+        old_type = srv.get("type")
+        # إذا كشف الفاحص أن الملفات واجهة ثابتة، لا نبقِ نوعاً قديماً مثل Node.js.
+        if not old_type or old_type not in SUPPORTED_SERVER_TYPES:
+            srv["type"] = detected
+        elif old_type == "Static":
+            # النوع الذي اختاره المستخدم ثابت؛ رفع CSS/JS قبل index.html لا يحوّله خطأً إلى Python.
+            srv["type"] = "Static"
+        elif detected == "Static" and old_type in ("Python", "Node.js"):
+            current_entry = srv.get("startup_file", "")
+            current_path = os.path.join(srv_path, current_entry) if current_entry else ""
+            expected = {"Python": (".py",), "Node.js": (".js", ".mjs", ".cjs")}.get(old_type, ())
+            if not current_entry or not os.path.isfile(current_path) or os.path.splitext(current_entry)[1].lower() not in expected:
+                srv["type"] = "Static"
+
+        server_type = srv.get("type", detected)
+        current = srv.get("startup_file", "")
+        current_path = os.path.join(srv_path, current) if current else ""
+        if server_type == "Static":
+            # الموقع الثابت يجب أن يبدأ بصفحة HTML، لا بملف app.py/main.py.
+            if not current or os.path.splitext(current)[1].lower() not in (".html", ".htm") or not os.path.isfile(current_path):
+                srv["startup_file"] = detect_main_file(srv_path, "Static")
+        else:
+            expected_exts = {
+                "Python": (".py",), "Node.js": (".js", ".mjs", ".cjs"), "PHP": (".php",),
+                "Ruby": (".rb", ".ru"), "Java": (".java", ".xml", ".gradle", ".kts"),
+                "Go": (".go", ".mod"), "Rust": (".rs", ".toml")
+            }.get(server_type, ())
+            if (not current or not os.path.isfile(current_path)
+                    or (expected_exts and os.path.splitext(current)[1].lower() not in expected_exts)):
+                srv["startup_file"] = detect_main_file(srv_path, server_type)
+        changed = old_type != srv.get("type") or current != srv.get("startup_file", "")
+        if changed:
+            save_db(db)
+        return changed
     except Exception as e:
         print(f"⚠️ خطأ في الكشف التلقائي: {e}")
-    
-    return False
+        return False
 
 # ============== تصحيح تلقائي لأنواع السيرفرات ==============
 def fix_server_types():
-    """تصحيح تلقائي للسيرفرات اللي نوعها غلط"""
+    """تصحيح أنواع وملفات بدء التشغيل اعتماداً على محتوى المشروع."""
     updated = False
-    for folder, srv in db["servers"].items():
+    for folder, srv in db.get("servers", {}).items():
         srv_path = srv.get("path", "")
-        if os.path.exists(srv_path):
-            try:
-                files = os.listdir(srv_path)
-                php_files = [f for f in files if f.endswith('.php')]
-                js_files = [f for f in files if f.endswith('.js')]
-                py_files = [f for f in files if f.endswith('.py')]
-                
-                if php_files and srv.get("type") != "PHP":
-                    srv["type"] = "PHP"
-                    if not srv.get("startup_file"):
-                        srv["startup_file"] = php_files[0]
-                    updated = True
-                    print(f"✅ تم تصحيح نوع السيرفر {srv['name']} إلى PHP")
-                elif js_files and srv.get("type") != "Node.js":
-                    srv["type"] = "Node.js"
-                    if not srv.get("startup_file"):
-                        srv["startup_file"] = js_files[0]
-                    updated = True
-                    print(f"✅ تم تصحيح نوع السيرفر {srv['name']} إلى Node.js")
-                elif py_files and srv.get("type") != "Python":
-                    srv["type"] = "Python"
-                    if not srv.get("startup_file"):
-                        srv["startup_file"] = py_files[0]
-                    updated = True
-                    print(f"✅ تم تصحيح نوع السيرفر {srv['name']} إلى Python")
-            except Exception:
-                pass
+        if not os.path.isdir(srv_path):
+            continue
+        try:
+            detected = detect_project_type(srv_path)
+            old_type = srv.get("type")
+            old_startup = srv.get("startup_file", "")
+            # لا نغيّر نوع خوادم المستخدمين الصحيحة تلقائياً عند إقلاع لوحة الاستضافة؛
+            # هذا التصحيح خاص بالقيم المفقودة/غير المعروفة ويحافظ على إعداداتهم الحالية.
+            if not old_type or old_type not in SUPPORTED_SERVER_TYPES:
+                srv["type"] = detected
+            typ = srv.get("type", detected)
+            startup = srv.get("startup_file", "")
+            startup_path = os.path.join(srv_path, startup) if startup else ""
+            if typ == "Static":
+                if (not startup or os.path.splitext(startup)[1].lower() not in (".html", ".htm")
+                        or not os.path.isfile(startup_path)):
+                    srv["startup_file"] = detect_main_file(srv_path, "Static")
+            else:
+                expected_exts = {
+                    "Python": (".py",), "Node.js": (".js", ".mjs", ".cjs"), "PHP": (".php",),
+                    "Ruby": (".rb", ".ru"), "Java": (".java", ".xml", ".gradle", ".kts"),
+                    "Go": (".go", ".mod"), "Rust": (".rs", ".toml")
+                }.get(typ, ())
+                if (not startup or not os.path.isfile(startup_path)
+                        or (expected_exts and os.path.splitext(startup)[1].lower() not in expected_exts)):
+                    srv["startup_file"] = detect_main_file(srv_path, typ)
+            if old_type != srv.get("type") or old_startup != srv.get("startup_file", ""):
+                updated = True
+                print(f"✅ تم تصحيح إعدادات {srv.get('name', folder)}: {srv.get('type')} / {srv.get('startup_file')}")
+        except Exception as e:
+            print(f"⚠️ تعذر تصحيح نوع السيرفر {folder}: {e}")
     if updated:
         save_db(db)
-        print("✅ تم حفظ التغييرات في قاعدة البيانات")
-
-fix_server_types()
+        print("✅ تم حفظ إعدادات التشغيل المصححة")
 
 # ============== تشغيل شامل واكتشاف المنفذ ==============
 SUPPORTED_SERVER_TYPES = ("Python", "Node.js", "PHP", "Ruby", "Java", "Go", "Rust", "Static")
 COMMON_WEB_PORTS = (3000, 4000, 5000, 5173, 8000, 8001, 8080, 8081, 8088, 8888, 9000)
 
 def detect_project_type(srv_path: str):
+    """كشف نوع المشروع دون اعتبار ملفات JavaScript المرفقة بموقع ثابت تطبيق Node.js."""
     try:
-        names = set()
+        root_files = set(os.listdir(srv_path))
+        all_files = set()
+        py_files = []
+        js_files = []
         for root, dirs, files in os.walk(srv_path):
             depth = os.path.relpath(root, srv_path).count(os.sep)
             if depth > 2:
                 dirs[:] = []
                 continue
-            names.update(n.lower() for n in files)
+            dirs[:] = [d for d in dirs if d not in {".git", ".venv", "venv", "node_modules", "__pycache__"}]
+            all_files.update(n.lower() for n in files)
+            for name in files:
+                full = os.path.join(root, name)
+                low = name.lower()
+                if low.endswith(".py"):
+                    py_files.append(full)
+                if low.endswith((".js", ".mjs", ".cjs")):
+                    js_files.append(full)
     except Exception:
         return "Python"
-    if "package.json" in names or any(n.endswith(('.js','.mjs','.cjs')) for n in names): return "Node.js"
-    if "composer.json" in names or any(n.endswith('.php') for n in names): return "PHP"
-    if "cargo.toml" in names or any(n.endswith('.rs') for n in names): return "Rust"
-    if "go.mod" in names or any(n.endswith('.go') for n in names): return "Go"
-    if any(n in names for n in ('pom.xml','build.gradle','build.gradle.kts')) or any(n.endswith('.java') for n in names): return "Java"
-    if "gemfile" in names or any(n.endswith('.rb') for n in names): return "Ruby"
-    if any(n.endswith(('.html','.htm')) for n in names): return "Static"
-    if any(n.endswith('.py') for n in names): return "Python"
+
+    root_has_html = any(os.path.isfile(os.path.join(srv_path, n)) for n in ("index.html", "index.htm", "home.html"))
+    has_html = root_has_html or any(n.endswith((".html", ".htm")) for n in all_files)
+
+    # مشاريع PHP الحقيقية أولوية على قوالب HTML المرفقة معها.
+    if "composer.json" in {x.lower() for x in root_files} or any(n.endswith(".php") for n in all_files):
+        return "PHP"
+
+    # تمييز تطبيق Python الخلفي من أسماء ملفاته ومتطلبات/كود الخادم، حتى مع وجود index.html.
+    python_entry_names = {"main.py", "app.py", "server.py", "run.py", "start.py", "index.py", "wsgi.py", "asgi.py"}
+    root_py_names = {n.lower() for n in root_files if n.lower().endswith(".py")}
+    likely_python_backend = bool(root_py_names & python_entry_names)
+    req_path = os.path.join(srv_path, "requirements.txt")
+    pyproject_path = os.path.join(srv_path, "pyproject.toml")
+    dependency_text = ""
+    for dep_path in (req_path, pyproject_path):
+        if os.path.isfile(dep_path):
+            try:
+                dependency_text += "\n" + open(dep_path, "r", encoding="utf-8", errors="ignore").read().lower()
+            except Exception:
+                pass
+    python_framework_markers = ("flask", "fastapi", "django", "uvicorn", "gunicorn", "starlette", "quart", "http.server")
+    has_python_web_dependency = any(marker in dependency_text for marker in python_framework_markers)
+    python_web_markers = (
+        "flask(", "fastapi(", "django", "uvicorn.run", "app.run(", "httpserver(",
+        "threadinghttpserver(", "simplehttprequesthandler", "basehttprequesthandler",
+        "socketserver.tcpserver", "http.server", "wsgiref.simple_server", "run_server("
+    )
+    has_python_web_code = False
+    for py_path in py_files[:40]:
+        try:
+            if os.path.getsize(py_path) > 1_000_000:
+                continue
+            code = open(py_path, "r", encoding="utf-8", errors="ignore").read().lower()
+            if any(marker in code for marker in python_web_markers):
+                has_python_web_code = True
+                break
+        except Exception:
+            pass
+    if py_files and (has_python_web_dependency or has_python_web_code or (likely_python_backend and not has_html)):
+        return "Python"
+
+    # package.json يعني Node.js فقط إذا كان التطبيق فعلاً يعتمد على Node؛ أما
+    # حزمة ثابتة مع index.html وملف خادم بسيط بلا dependencies فتُخدم مباشرة من Static.
+    package_path = os.path.join(srv_path, "package.json")
+    if os.path.isfile(package_path):
+        if has_html:
+            try:
+                pkg = json.load(open(package_path, encoding="utf-8"))
+                deps = pkg.get("dependencies", {}) or {}
+                dev_deps = pkg.get("devDependencies", {}) or {}
+                scripts = pkg.get("scripts", {}) or {}
+                js_content = ""
+                for candidate in js_files[:10]:
+                    try:
+                        if os.path.getsize(candidate) < 500_000:
+                            js_content += open(candidate, "r", encoding="utf-8", errors="ignore").read().lower() + "\n"
+                    except Exception:
+                        pass
+                node_server_markers = (
+                    "express(", "require('express')", 'require("express")', "fastify(", "koa(", "socket.io", "next(",
+                    "http.createserver(", "https.createserver(", "createserver(", "server.listen(", "app.listen(",
+                    "process.env.port", "bun.serve(", "deno.serve("
+                )
+                if deps or dev_deps or any(k in scripts for k in ("build", "dev", "test")) or any(m in js_content for m in node_server_markers):
+                    return "Node.js"
+                return "Static"
+            except Exception:
+                return "Static"
+        return "Node.js"
+
+    # باقي أطر/لغات الخادم ذات الملفات الواضحة.
+    if "cargo.toml" in all_files or any(n.endswith(".rs") for n in all_files): return "Rust"
+    if "go.mod" in all_files or any(n.endswith(".go") for n in all_files): return "Go"
+    if any(n in all_files for n in ("pom.xml", "build.gradle", "build.gradle.kts")) or any(n.endswith(".java") for n in all_files): return "Java"
+    if "gemfile" in all_files or any(n.endswith(".rb") for n in all_files): return "Ruby"
+
+    if has_html:
+        # إذا لم توجد إشارات واضحة إلى خادم Python، اعتبر HTML الصفحة العامة
+        # حتى لو كانت الحزمة تحتوي ملف main.py مساعداً أو غير مستخدم.
+        return "Static"
+    if py_files: return "Python"
+    if js_files: return "Node.js"
     return "Python"
+
 
 def detect_main_file(srv_path: str, server_type: str) -> str:
     if server_type == "Node.js":
@@ -444,10 +574,18 @@ def detect_main_file(srv_path: str, server_type: str) -> str:
     if server_type == "Static":
         for c in ['index.html','index.htm','home.html']:
             if os.path.exists(os.path.join(srv_path,c)): return c
-        return next((f for f in os.listdir(srv_path) if f.endswith(('.html','.htm'))),'')
+        for root, dirs, files in os.walk(srv_path):
+            dirs[:] = [d for d in dirs if d not in {".git", ".venv", "venv", "node_modules", "__pycache__"}]
+            for f in sorted(files):
+                if f.lower().endswith(('.html', '.htm')):
+                    return os.path.relpath(os.path.join(root, f), srv_path).replace(os.sep, '/')
+        return ''
     for c in ['main.py','app.py','server.py','index.py','run.py','start.py','bot.py']:
         if os.path.exists(os.path.join(srv_path,c)): return c
     return next((f for f in os.listdir(srv_path) if f.endswith('.py')),'')
+
+# نفّذ التصحيح بعد تعريف كاشف نوع المشروع وملف البدء.
+fix_server_types()
 
 def _list_process_ports(pid):
     ports=set()
@@ -585,8 +723,9 @@ def ensure_python_environment(srv_path, log_file=None):
     try:
         venv_dir = os.path.join(srv_path, ".venv")
         venv_python = os.path.join(venv_dir, "Scripts", "python.exe") if os.name == "nt" else os.path.join(venv_dir, "bin", "python")
+        venv_created_or_missing = not os.path.exists(venv_python)
 
-        if not os.path.exists(venv_python):
+        if venv_created_or_missing:
             if log_file:
                 log_file.write("\n🧰 إنشاء بيئة Python خاصة بالسيرفر...\n")
                 log_file.flush()
@@ -597,34 +736,89 @@ def ensure_python_environment(srv_path, log_file=None):
             venv_python = sys.executable
 
         req_file = os.path.join(srv_path, "requirements.txt")
-        generated = False
-        if not os.path.exists(req_file):
-            packages = detect_python_packages(srv_path)
-            with open(req_file, "w", encoding="utf-8") as rf:
-                rf.write("\n".join(packages) + ("\n" if packages else ""))
-            generated = True
-            if log_file:
-                log_file.write(f"📦 تم إنشاء requirements.txt تلقائياً ({len(packages)} مكتبة)\n")
-                if packages:
-                    log_file.write("   " + ", ".join(packages) + "\n")
-                log_file.flush()
+        # استنتج المكتبات من الاستيرادات، ثم أضف الناقص فقط. لا نحذف إصدارات المستخدم المثبتة.
+        inferred = detect_python_packages(srv_path)
+        python_sources = []
+        for root, dirs, files in os.walk(srv_path):
+            dirs[:] = [d for d in dirs if d not in {".venv", "venv", "__pycache__", ".git", "node_modules"}]
+            for name in files:
+                if name.endswith(".py"):
+                    try:
+                        python_sources.append(open(os.path.join(root, name), "r", encoding="utf-8", errors="ignore").read().lower())
+                    except Exception:
+                        pass
+        all_python_text = "\n".join(python_sources)
+        if "fastapi" in all_python_text and "uvicorn" not in inferred:
+            inferred.append("uvicorn")
+        if "django.core.management" in all_python_text and not any(x.lower().replace('_','-') in ('django','django>=') for x in inferred):
+            inferred.append("Django")
 
-        # إذا كان الملف موجوداً وفارغاً، لا نثبت شيئاً.
+        if not os.path.exists(req_file):
+            with open(req_file, "w", encoding="utf-8") as rf:
+                rf.write("\n".join(inferred) + ("\n" if inferred else ""))
+            if log_file:
+                log_file.write(f"📦 تم إنشاء requirements.txt تلقائياً ({len(inferred)} مكتبة مستنتجة)\n")
+                if inferred:
+                    log_file.write("   " + ", ".join(inferred) + "\n")
+                log_file.flush()
+        else:
+            try:
+                original_lines = open(req_file, "r", encoding="utf-8", errors="ignore").read().splitlines()
+            except Exception:
+                original_lines = []
+            present = set()
+            for line in original_lines:
+                item = line.split("#", 1)[0].strip()
+                if not item or item.startswith("-"):
+                    continue
+                match = re.match(r"([A-Za-z0-9_.-]+)", item)
+                if match:
+                    present.add(match.group(1).lower().replace("_", "-").replace(".", "-"))
+            added = []
+            for package in inferred:
+                normalized = re.split(r"[<>=!~\[]", package, maxsplit=1)[0].strip().lower().replace("_", "-").replace(".", "-")
+                if normalized and normalized not in present:
+                    added.append(package)
+                    present.add(normalized)
+            if added:
+                with open(req_file, "a", encoding="utf-8") as rf:
+                    if original_lines and original_lines[-1].strip():
+                        rf.write("\n")
+                    rf.write("\n".join(added) + "\n")
+                if log_file:
+                    log_file.write("🧩 أُضيفت مكتبات ناقصة من imports إلى requirements.txt: " + ", ".join(added) + "\n")
+                    log_file.flush()
+
         try:
-            with open(req_file, "r", encoding="utf-8", errors="ignore") as rf:
-                has_requirements = bool(rf.read().strip())
+            requirement_text = open(req_file, "r", encoding="utf-8", errors="ignore").read()
+            has_requirements = bool(requirement_text.strip())
+            req_hash = hashlib.sha256(requirement_text.encode("utf-8")).hexdigest()
         except Exception:
             has_requirements = False
-
-        if has_requirements:
+            req_hash = ""
+        stamp_path = os.path.join(srv_path, ".mazagi_dependencies_hash")
+        try:
+            installed_hash = open(stamp_path, "r", encoding="utf-8").read().strip()
+        except Exception:
+            installed_hash = ""
+        if has_requirements and (installed_hash != req_hash or venv_created_or_missing):
             if log_file:
                 log_file.write("📦 تثبيت مكتبات Python تلقائياً...\n")
                 log_file.flush()
             cmd = [venv_python, "-m", "pip", "install", "--disable-pip-version-check", "-r", req_file]
             proc = subprocess.run(cmd, cwd=srv_path, stdout=log_file or subprocess.DEVNULL, stderr=subprocess.STDOUT, timeout=300, check=False)
+            if proc.returncode == 0 and req_hash:
+                try:
+                    with open(stamp_path, "w", encoding="utf-8") as sf:
+                        sf.write(req_hash)
+                except Exception:
+                    pass
             if log_file:
-                log_file.write("✅ اكتمل تثبيت المكتبات\n" if proc.returncode == 0 else "⚠️ بعض المكتبات لم تثبت بنجاح\n")
+                log_file.write("✅ اكتمل تثبيت المكتبات\n" if proc.returncode == 0 else "❌ فشل تثبيت مكتبة أو أكثر؛ راجع out.log/errors.log\n")
                 log_file.flush()
+        elif has_requirements and log_file:
+            log_file.write("✅ المكتبات مثبتة مسبقاً لنفس requirements.txt؛ تم تجاوز التثبيت المتكرر.\n")
+            log_file.flush()
         return venv_python
     except Exception as e:
         if log_file:
@@ -657,6 +851,72 @@ def auto_install_deps(srv_path: str, server_type: str, log_file):
         log_file.write(f"\n⚠️ تثبيت تلقائي: {e}\n")
     log_file.flush()
 
+def detect_python_web_app(srv_path: str, main_file: str):
+    """Identify common Python web apps whose module exports app but has no app.run() call."""
+    if not main_file or not main_file.lower().endswith(".py"):
+        return None
+    source_path = safe_relative_path(srv_path, main_file)
+    if not source_path or not os.path.isfile(source_path):
+        return None
+    try:
+        source = open(source_path, "r", encoding="utf-8", errors="ignore").read()
+        tree = ast.parse(source, filename=source_path)
+    except Exception:
+        return None
+    # If the script already launches its own web server, let the script control its startup.
+    if re.search(r"(?:\.run|uvicorn\.run|runserver)\s*\(", source, re.I):
+        return None
+    aliases = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.module:
+            for alias in node.names:
+                aliases[alias.asname or alias.name] = alias.name
+        elif isinstance(node, ast.Import):
+            for alias in node.names:
+                aliases[alias.asname or alias.name.split('.')[0]] = alias.name
+    hints = set()
+    low = source.lower()
+    if "flask" in low:
+        hints.add("flask")
+    if "fastapi" in low or "starlette" in low:
+        hints.add("fastapi")
+    for node in tree.body:
+        targets = []
+        value = None
+        if isinstance(node, ast.Assign):
+            targets = [t.id for t in node.targets if isinstance(t, ast.Name)]
+            value = node.value
+        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+            targets = [node.target.id]
+            value = node.value
+        if not targets or not isinstance(value, ast.Call):
+            continue
+        func = value.func
+        called = func.id if isinstance(func, ast.Name) else (func.attr if isinstance(func, ast.Attribute) else "")
+        actual = aliases.get(called, called).lower()
+        framework = None
+        if actual == "flask":
+            framework = "flask"
+        elif actual in ("fastapi", "starlette"):
+            framework = "fastapi"
+        elif called.lower() == "create_app" and hints:
+            framework = "flask" if "flask" in hints else "fastapi"
+        if framework:
+            return {"framework": framework, "module": os.path.splitext(main_file.replace(os.sep, "/"))[0].replace("/", "."), "app_name": targets[0]}
+    # Application factory patterns: app = create_app(), when Flask/FastAPI is imported in the same module.
+    for node in tree.body:
+        if isinstance(node, (ast.Assign, ast.AnnAssign)):
+            value = node.value
+            targets = ([t.id for t in node.targets if isinstance(t, ast.Name)] if isinstance(node, ast.Assign)
+                       else ([node.target.id] if isinstance(node.target, ast.Name) else []))
+            if targets and isinstance(value, ast.Call):
+                called = value.func.id if isinstance(value.func, ast.Name) else ""
+                if called in ("create_app", "make_app", "create_application") and hints:
+                    framework = "flask" if "flask" in hints else "fastapi"
+                    return {"framework": framework, "module": os.path.splitext(main_file.replace(os.sep, "/"))[0].replace("/", "."), "app_name": targets[0]}
+    return None
+
+
 # ============== تشغيل السيرفر ==============
 def start_server_process(folder):
     srv=db['servers'].get(folder)
@@ -664,12 +924,24 @@ def start_server_process(folder):
     srv_path=srv.get('path','')
     if not os.path.isdir(srv_path): return False,'مجلد المشروع غير موجود'
     detected=detect_project_type(srv_path)
-    if not srv.get('type') or srv.get('type')=='Python': srv['type']=detected
+    current_type=srv.get('type')
+    if not current_type or current_type not in SUPPORTED_SERVER_TYPES:
+        srv['type']=detected
+    elif current_type in ('Python', 'Node.js') and detected == 'Static':
+        current_entry=srv.get('startup_file','')
+        entry_path=os.path.join(srv_path,current_entry) if current_entry else ''
+        expected={'Python':('.py',),'Node.js':('.js','.mjs','.cjs')}.get(current_type,())
+        if not current_entry or not os.path.isfile(entry_path) or os.path.splitext(current_entry)[1].lower() not in expected:
+            srv['type']='Static'
+    # النوع Static المختار صراحةً لا يتغير إلى Python عند كون المجلد فارغاً.
     server_type=srv.get('type','Python')
     main_file=srv.get('startup_file') or detect_main_file(srv_path,server_type)
     srv['startup_file']=main_file
     if server_type=='Static':
-        if not main_file: return False,'لا يوجد ملف HTML'
+        html_main = detect_main_file(srv_path, 'Static')
+        if not html_main: return False,'لا يوجد ملف HTML'
+        # لا تحتفظ بملف بدء قديم من نوع .py أو .js داخل مشروع HTML ثابت.
+        srv['startup_file'] = html_main
         srv.update(status='Running',pid=None,port=None,start_time=time.time())
         save_db(db); return True,'✅ تم تشغيل الموقع الثابت'
     if not main_file: return False,f'لا يوجد ملف تشغيل لـ {server_type}'
@@ -701,8 +973,39 @@ def start_server_process(folder):
         elif server_type=='Go': cmd=['go','run','.'] if os.path.exists(os.path.join(srv_path,'go.mod')) else ['go','run',main_file]
         elif server_type=='Rust': cmd=['cargo','run','--release']
         else:
-            with open(log_path,'a',encoding='utf-8') as dep_log: python_bin=ensure_python_environment(srv_path,dep_log)
-            cmd=[python_bin,'-u',main_file]
+            with open(log_path,'a',encoding='utf-8') as dep_log:
+                python_bin=ensure_python_environment(srv_path,dep_log)
+            # Let submodules resolve from the uploaded project root.
+            old_pythonpath = env.get("PYTHONPATH", "")
+            env["PYTHONPATH"] = srv_path + (os.pathsep + old_pythonpath if old_pythonpath else "")
+            web_app = detect_python_web_app(srv_path, main_file) if server_type == "Python" else None
+            if web_app:
+                app_ref = f"{web_app['module']}:{web_app['app_name']}"
+                if web_app['framework'] == "flask":
+                    env["FLASK_APP"] = app_ref
+                    env["FLASK_DEBUG"] = "0"
+                    env["FLASK_RUN_HOST"] = "0.0.0.0"
+                    env["FLASK_RUN_PORT"] = str(preferred)
+                    cmd = [python_bin, "-m", "flask", "run", "--no-reload", "--host", "0.0.0.0", "--port", str(preferred)]
+                    with open(log_path, 'a', encoding='utf-8') as lf:
+                        lf.write(f"\n🌐 تم اكتشاف تطبيق Flask بدون app.run؛ تشغيل تلقائي عبر {app_ref} على المنفذ {preferred}.\n")
+                else:
+                    cmd = [python_bin, "-m", "uvicorn", app_ref, "--host", "0.0.0.0", "--port", str(preferred)]
+                    with open(log_path, 'a', encoding='utf-8') as lf:
+                        lf.write(f"\n🌐 تم اكتشاف تطبيق FastAPI/ASGI بدون uvicorn.run؛ تشغيل تلقائي عبر {app_ref} على المنفذ {preferred}.\n")
+            elif os.path.isfile(os.path.join(srv_path, "manage.py")):
+                try:
+                    django_source = open(os.path.join(srv_path, "manage.py"), "r", encoding="utf-8", errors="ignore").read()
+                except Exception:
+                    django_source = ""
+                if "execute_from_command_line" in django_source and ("django" in django_source.lower() or os.path.exists(os.path.join(srv_path, "settings.py"))):
+                    cmd = [python_bin, "manage.py", "runserver", f"0.0.0.0:{preferred}"]
+                    with open(log_path, 'a', encoding='utf-8') as lf:
+                        lf.write(f"\n🌐 تم اكتشاف مشروع Django؛ تشغيل manage.py runserver على المنفذ {preferred}.\n")
+                else:
+                    cmd=[python_bin,'-u',main_file]
+            else:
+                cmd=[python_bin,'-u',main_file]
         proc=subprocess.Popen(cmd,cwd=srv_path,stdout=log_file,stderr=open(error_path,'a',encoding='utf-8'),env=env,preexec_fn=os.setsid if hasattr(os,'setsid') else None)
         srv.update(pid=proc.pid,status='Starting',start_time=time.time()); save_db(db)
         def settle():
@@ -838,6 +1141,26 @@ def _check_admin_access():
     return False
 
 # ============== الصفحات ==============
+@app.route('/healthz')
+def healthz():
+    return jsonify({"ok": True, "service": "mazagi-host"}), 200
+
+@app.route('/api/persistence/status')
+def persistence_status():
+    if 'username' not in session or not is_admin(session.get('username', '')):
+        return jsonify({"success": False, "message": "غير مصرح"}), 403
+    return jsonify({
+        "success": True,
+        "is_railway": IS_RAILWAY_RUNTIME,
+        "volume_detected": bool(RAILWAY_VOLUME_MOUNT_PATH),
+        "persistent": PERSISTENT_STORAGE_CONFIGURED,
+        "mount_path": RAILWAY_VOLUME_MOUNT_PATH or None,
+        "data_dir": DATA_DIR,
+        "database_exists": os.path.isfile(DB_FILE),
+        "users_dir_exists": os.path.isdir(USERS_DIR),
+        "warning": ("لم يتم اكتشاف Railway Volume. ربط GitHub وحده لا يحفظ ملفات الحاوية بين النشرات؛ اربط Volume على /data." if IS_RAILWAY_RUNTIME and not PERSISTENT_STORAGE_CONFIGURED else "")
+    })
+
 @app.route('/')
 def home():
     if 'username' not in session:
@@ -1336,6 +1659,9 @@ def find_telegram_bot_token(srv_path: str):
     return None
 
 def get_server_open_url(folder: str, srv: dict):
+    # موقع HTML/CSS/JS رابط ويب عام دائماً، حتى لو احتوى ملف JavaScript على نص يشبه BOT_TOKEN.
+    if srv.get('type') == 'Static':
+        return {'kind':'website','url':f"{request.host_url.rstrip('/')}/site/{quote(folder,safe='')}/",'label':'فتح الموقع'}
     token=find_telegram_bot_token(srv.get('path',''))
     if token:
         try:
@@ -1376,16 +1702,55 @@ def _proxy_headers(upstream,prefix):
 def proxy_user_site(folder,subpath):
     folder=unquote(folder); srv=db['servers'].get(folder)
     if not srv: return 'الموقع غير موجود',404
-    if srv.get('owner')!=session.get('username'): return 'غير مصرح',403
+    # صفحات المواقع المنشورة عامة؛ إدارة الملفات والتشغيل تبقى محمية في مسارات API منفصلة.
     prefix='/site/'+quote(folder,safe='')
     if srv.get('type')=='Static':
-        base=os.path.abspath(srv.get('path','')); rel=subpath or srv.get('startup_file') or 'index.html'; target=safe_relative_path(base,rel)
+        base=os.path.abspath(srv.get('path',''))
+        if not subpath:
+            # الصفحة الرئيسية دائماً HTML؛ لا نعرض app.py/main.py بسبب قيمة startup_file قديمة.
+            html_candidates=['index.html','index.htm','home.html']
+            rel=next((name for name in html_candidates if os.path.isfile(os.path.join(base,name))), '')
+            if not rel:
+                configured=srv.get('startup_file','')
+                if configured and os.path.splitext(configured)[1].lower() in ('.html','.htm') and os.path.isfile(os.path.join(base,configured)):
+                    rel=configured
+            if not rel:
+                try:
+                    for root,dirs,names in os.walk(base):
+                        dirs[:] = [d for d in dirs if d not in {'.git','.venv','venv','node_modules','__pycache__'}]
+                        found=next((os.path.relpath(os.path.join(root,n),base).replace(os.sep,'/') for n in sorted(names) if n.lower().endswith(('.html','.htm'))),None)
+                        if found:
+                            rel=found
+                            break
+                except Exception:
+                    pass
+            if not rel:
+                return 'لم يتم العثور على صفحة HTML رئيسية (index.html).',404
+        else:
+            rel=subpath
+            # لا تسمح بعرض كود الخادم أو ملفات الإعدادات عبر رابط الموقع العام.
+            low_parts=[part.lower() for part in rel.replace('\\','/').split('/')]
+            ext=os.path.splitext(rel)[1].lower()
+            blocked_names = {
+                'procfile','requirements.txt','dockerfile','railway.toml','render.yaml',
+                'composer.json','composer.lock','package.json','package-lock.json','pnpm-lock.yaml','yarn.lock',
+                'pyproject.toml','setup.py','setup.cfg','poetry.lock','pipfile','pipfile.lock',
+                'gemfile','gemfile.lock','cargo.toml','go.mod','service-account.json',
+                'credentials.json','secrets.json','token.json','firebase-adminsdk.json'
+            }
+            blocked_exts = {'.py','.pyc','.pyo','.log','.ini','.toml','.yaml','.yml','.zip','.sqlite','.sqlite3','.db','.pem','.key','.crt','.p12','.bak'}
+            if any(part.startswith('.') for part in low_parts) or ext in blocked_exts or os.path.basename(rel).lower() in blocked_names:
+                return 'الملف غير متاح للعرض العام',404
+        target=safe_relative_path(base,rel)
         if not target or not os.path.isfile(target): return 'الملف غير موجود',404
         try:
-            from mimetypes import guess_type; ctype=guess_type(target)[0] or ''
+            from mimetypes import guess_type
+            ctype=guess_type(target)[0] or ''
             if 'text/html' in ctype:
-                html=open(target,'r',encoding='utf-8',errors='ignore').read(); return Response(_rewrite_site_html(html,prefix),content_type='text/html; charset=utf-8')
-        except Exception: pass
+                html=open(target,'r',encoding='utf-8',errors='ignore').read()
+                return Response(_rewrite_site_html(html,prefix),content_type='text/html; charset=utf-8')
+        except Exception:
+            pass
         return send_file(target)
     if srv.get('status') not in ('Running','Starting'): return 'الموقع متوقف حالياً. شغّل السيرفر ثم اضغط فتح مرة أخرى.',503
     port=srv.get('port')
@@ -1425,7 +1790,7 @@ def list_servers():
             user_servers.append({
                 "folder": folder,
                 "title": srv["name"],
-                "subtitle": f"سيرفر {srv.get('type', 'Python')}",
+                "subtitle": f"{'موقع HTML/CSS/JS' if srv.get('type') == 'Static' else 'سيرفر ' + str(srv.get('type', 'Python'))}",
                 "type": srv.get("type", "Python"),
                 "startup_file": srv.get("startup_file", ""),
                 "status": srv.get("status", "Stopped"),
@@ -1470,7 +1835,7 @@ def add_server():
         return jsonify({"success": False, "message": "الرجاء إدخال اسم للسيرفر"})
     
     server_type = data.get("server_type", "Python")
-    if server_type not in ("Python", "Node.js", "PHP"):
+    if server_type not in ("Python", "PHP", "Static", "Node.js"):
         server_type = "Python"
     
     plan_id = user.get("plan", "free")
@@ -1674,7 +2039,6 @@ def upload_files(folder):
 
     uploaded = 0
     errors_list = []
-    detected_type = None
 
     for f in files:
         try:
@@ -1683,13 +2047,6 @@ def upload_files(folder):
             filename = safe_user_filename(f.filename)
             if not filename:
                 continue
-            ext = os.path.splitext(filename)[1].lower()
-            if ext == '.php':
-                detected_type = detected_type or "PHP"
-            elif ext == '.js':
-                detected_type = detected_type or "Node.js"
-            elif ext == '.py':
-                detected_type = detected_type or "Python"
             save_path = os.path.join(srv["path"], filename)
             f.save(save_path)
             uploaded += 1
@@ -1699,8 +2056,6 @@ def upload_files(folder):
     if not uploaded:
         return jsonify({"success": False, "message": "فشل الرفع", "errors": errors_list})
 
-    if detected_type:
-        srv["type"] = detected_type
     auto_detect_server_type(srv["path"], srv)
     save_db(db)
 
@@ -1730,6 +2085,22 @@ def _auto_install_after_upload(srv_path: str, server_type: str, log_path: str):
         except Exception:
             pass
 
+
+def safe_extract_zip(zip_file, destination):
+    """يفك ZIP فقط داخل مجلد المشروع ويرفض المسارات الخارجة أو روابط الملفات الرمزية."""
+    base = os.path.abspath(destination)
+    os.makedirs(base, exist_ok=True)
+    for info in zip_file.infolist():
+        raw_name = info.filename.replace("\\", "/")
+        if not raw_name or raw_name.startswith("/") or re.match(r"^[A-Za-z]:", raw_name):
+            raise ValueError("أرشيف ZIP يحتوي مساراً غير آمن")
+        target = os.path.abspath(os.path.join(base, raw_name))
+        if os.path.commonpath([base, target]) != base:
+            raise ValueError("أرشيف ZIP يحاول الكتابة خارج مجلد المشروع")
+        unix_mode = (info.external_attr >> 16) & 0xFFFF
+        if (unix_mode & 0o170000) == 0o120000:
+            raise ValueError("روابط الملفات الرمزية غير مسموحة داخل ZIP")
+    zip_file.extractall(base)
 
 def normalize_extracted_project(path):
     """إذا كان ZIP يحتوي مجلد مشروع واحد، نرفع محتواه إلى جذر السيرفر حتى تعمل المسارات."""
@@ -1801,7 +2172,7 @@ def auto_create_server_from_upload():
             with zipfile.ZipFile(zip_path, 'r') as zf:
                 if zf.testzip():
                     raise ValueError("ملف ZIP تالف")
-                zf.extractall(path)
+                safe_extract_zip(zf, path)
             normalize_extracted_project(path)
             # تحديد نوع المشروع وملف التشغيل من المحتوى بعد فك الضغط.
             server_type = detect_project_type(path)
@@ -1949,7 +2320,7 @@ def unzip_file(folder, filename):
                 dest = os.path.abspath(os.path.join(base, member_name))
                 if os.path.commonpath([base, dest]) != base:
                     return jsonify({"success": False, "message": "ZIP يحتوي مساراً غير آمن"}), 400
-            zf.extractall(base)
+            safe_extract_zip(zf, base)
         # كشف تلقائي بعد فك الضغط + حفظ
         auto_detect_server_type(srv["path"], srv)
         save_db(db)
@@ -2056,8 +2427,11 @@ def set_startup_file(folder):
     filename = safe_user_filename(data.get("filename", "").strip())
     if not filename:
         return jsonify({"success": False, "message": "اسم غير صالح"})
-    if not os.path.exists(os.path.join(srv["path"], filename)):
-        return jsonify({"success": False, "message": "الملف غير موجود"})
+    startup_path = safe_relative_path(srv["path"], filename)
+    if not startup_path or not os.path.isfile(startup_path):
+        return jsonify({"success": False, "message": "الملف غير موجود"}), 404
+    if srv.get("type") == "Static" and os.path.splitext(filename)[1].lower() not in (".html", ".htm"):
+        return jsonify({"success": False, "message": "موقع HTML يحتاج ملف بدء من نوع .html أو .htm"}), 400
     srv["startup_file"] = filename
     save_db(db)
     return jsonify({"success": True, "message": f"✅ تم تعيين {filename} كملف التشغيل"})
@@ -2157,6 +2531,8 @@ def install_requirements(folder):
         return jsonify({"success": False})
     server_type = srv.get("type", "Python")
     log_path = os.path.join(srv["path"], "out.log")
+    if server_type == "Static":
+        return jsonify({"success": True, "message": "✅ موقع HTML ثابت لا يحتاج تثبيت مكتبات."})
     
     if server_type == "Node.js":
         deps_file = os.path.join(srv["path"], "package.json")
@@ -2368,6 +2744,8 @@ def bot_install():
     if not srv or srv["owner"] != username:
         return jsonify({"success": False, "message": "غير مصرح"}), 403
     server_type = srv.get("type", "Python")
+    if server_type == "Static":
+        return jsonify({"success": True, "message": "الموقع الثابت لا يحتاج تثبيت مكتبات."})
     log_path = os.path.join(srv["path"], "out.log")
     
     if server_type == "Node.js":
@@ -2418,7 +2796,7 @@ def bot_create_server():
     max_allowed = user.get("max_servers", 2)
     if user_srv_count >= max_allowed:
         return jsonify({"success": False, "message": f"وصلت للحد الأقصى ({max_allowed}) سيرفر"})
-    if server_type not in ("Python", "Node.js", "PHP"):
+    if server_type not in ("Python", "PHP", "Static", "Node.js"):
         server_type = "Python"
     
     plan_id = user.get("plan", "free")

@@ -13,7 +13,7 @@ from telegram.ext import (
 )
 
 # ========== إعدادات البوت ==========
-BOT_TOKEN = os.environ.get("BOT_TOKEN", "8622967846:AAH-lVG2etuNCDctKn_y-s81_qKF3IBvBIM")
+BOT_TOKEN = os.environ.get("BOT_TOKEN", "").strip()
 BOT_USERNAME = os.environ.get("BOT_USERNAME", "@sjsjjskbbot")
 API_BASE_URL = os.environ.get("API_BASE_URL", "https://skkbsmdh.up.railway.app")
 
@@ -932,6 +932,8 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 #  تشغيل البوت
 # ─────────────────────────────────────────────────
 def main():
+    if not BOT_TOKEN:
+        raise SystemExit("BOT_TOKEN غير مضبوط. أضف BOT_TOKEN في Railway Variables لتشغيل البوت.")
     application = Application.builder().token(BOT_TOKEN).build()
 
     conv = ConversationHandler(

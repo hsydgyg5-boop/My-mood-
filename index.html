@@ -386,6 +386,10 @@
             background: rgba(0, 229, 255, 0.15);
             color: #00e5ff;
         }
+        .badge-static {
+            background: rgba(16, 185, 129, 0.16);
+            color: #5eead4;
+        }
 
         /* أزرار التحكم الجديدة - شكل مستطيل بحواف دائرية (غير دائري) */
         .server-actions {
@@ -925,6 +929,7 @@
 <div class="container">
     <!-- الصفحة الرئيسية (قائمة السيرفرات) -->
     <div id="homeView">
+        <div id="persistenceWarning" role="alert" style="display:none;margin:0 0 18px;padding:14px 16px;border:1px solid rgba(255,185,60,.55);background:rgba(255,185,60,.10);color:#ffe0a1;border-radius:16px;line-height:1.6;font-size:.88rem;"></div>
         <div class="stats-grid">
             <div class="stat-card"><div class="stat-header"><span class="stat-title">السيرفرات المستخدمة</span><div class="stat-icon"><i class="fas fa-server"></i></div></div><div class="stat-value" id="usedServers">0/2</div></div>
             <div class="stat-card"><div class="stat-header"><span class="stat-title">الصلاحية المتبقية</span><div class="stat-icon"><i class="fas fa-calendar-alt"></i></div></div><div class="stat-value" id="expiryDays">-- يوم</div></div>
@@ -939,6 +944,9 @@
                 </button>
                 <button class="create-server-btn php" onclick="showCreateServerModal('PHP')">
                     <i class="fab fa-php"></i> خادم PHP
+                </button>
+                <button class="create-server-btn static" style="background:linear-gradient(135deg,#0f766e,#0891b2);color:#fff;" onclick="showCreateServerModal('Static')">
+                    <i class="fas fa-code"></i> موقع HTML/CSS/JS
                 </button>
                 <button class="create-server-btn" style="background:linear-gradient(135deg,#7c3aed,#a855f7);" onclick="document.getElementById('autoServerUpload').click()">
                     <i class="fas fa-cloud-arrow-up"></i> رفع ملف وتشغيله تلقائياً
@@ -1181,9 +1189,12 @@
         if (type === 'Python') {
             label.innerHTML = '🐍 Python';
             title.innerHTML = '<i class="fab fa-python"></i> إنشاء خادم Python';
-        } else {
+        } else if (type === 'PHP') {
             label.innerHTML = '🐘 PHP';
             title.innerHTML = '<i class="fab fa-php"></i> إنشاء خادم PHP';
+        } else {
+            label.innerHTML = '🌐 HTML / CSS / JavaScript';
+            title.innerHTML = '<i class="fas fa-code"></i> إنشاء موقع HTML ثابت';
         }
         
         document.getElementById('createServerModal').classList.add('active');
@@ -1312,8 +1323,9 @@
             grid.innerHTML = '';
             
             // تعريف أيقونات وأنواع السيرفرات بشكل صحيح
-            const typeIcons = { 'Python': '🐍', 'PHP': '🐘', 'Node.js': '🟨' };
-            const typeClasses = { 'Python': 'badge-python', 'PHP': 'badge-php', 'Node.js': 'badge-node' };
+            const typeIcons = { 'Python': '🐍', 'PHP': '🐘', 'Node.js': '🟨', 'Static': '🌐' };
+            const typeNames = { 'Python': 'Python', 'PHP': 'PHP', 'Node.js': 'Node.js', 'Static': 'HTML/CSS/JS' };
+            const typeClasses = { 'Python': 'badge-python', 'PHP': 'badge-php', 'Node.js': 'badge-node', 'Static': 'badge-static' };
             
             d.servers.forEach(s => {
                 // استخدم s.type مباشرة من الـ API
@@ -1328,7 +1340,7 @@
                     <div class="server-card-header">
                         <div class="server-icon"><i class="fas fa-cube"></i></div>
                         <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
-                            <span class="badge ${typeClass}">${icon} ${type}</span>
+                            <span class="badge ${typeClass}">${icon} ${typeNames[type] || type}</span>
                             <div class="server-status-badge ${s.status==='Running'?'status-online':'status-offline'}">
                                 <span class="status-dot ${s.status==='Running'?'dot-online':'dot-offline'}"></span>
                                 ${s.status==='Running'?'يعمل':'متوقف'}
@@ -1430,9 +1442,10 @@
         document.getElementById('planDetails').innerText = s.plan === 'free' ? 'مجاني' : s.plan;
         
         // عرض نوع السيرفر في التفاصيل
-        const typeIcons = { 'Python': '🐍', 'PHP': '🐘', 'Node.js': '🟨' };
+        const typeIcons = { 'Python': '🐍', 'PHP': '🐘', 'Node.js': '🟨', 'Static': '🌐' };
+        const typeNames = { 'Python': 'Python', 'PHP': 'PHP', 'Node.js': 'Node.js', 'Static': 'HTML/CSS/JS' };
         const typeIcon = typeIcons[s.type] || '📦';
-        const typeName = s.type || 'Python';
+        const typeName = typeNames[s.type] || s.type || 'Python';
         document.getElementById('serverTypeBadge').innerHTML = `${typeIcon} ${typeName} | ${escapeHtml(s.title)}`;
         
         if(polling) clearInterval(polling);
@@ -1754,7 +1767,7 @@
         const files = await r.json(); 
         const type = currentServer.type || 'Python';
         // تحديد الامتدادات حسب نوع السيرفر
-        const extensions = type === 'Node.js' ? ['.js'] : type === 'PHP' ? ['.php'] : ['.py'];
+        const extensions = type === 'Node.js' ? ['.js', '.mjs', '.cjs'] : type === 'PHP' ? ['.php'] : type === 'Static' ? ['.html', '.htm'] : ['.py'];
         const startupFiles = files.filter(f=> extensions.some(ext => f.name.endsWith(ext)) && !f.is_dir); 
         const select = document.getElementById('startupFileSelect'); 
         if(select) select.innerHTML = '<option value="">-- اختر ملف التشغيل --</option>'+startupFiles.map(f=>`<option value="${f.name}" ${currentServer.startup_file===f.name?'selected':''}>${f.name}</option>`).join(''); 
@@ -1802,8 +1815,25 @@
         return String(s).replace(/[&<>]/g, m=>m==='&'?'&amp;':m==='<'?'&lt;':'&gt;'); 
     }
 
+    async function checkPersistenceStatus() {
+        const banner = document.getElementById('persistenceWarning');
+        if (!banner) return;
+        try {
+            const response = await fetch('/api/persistence/status', {cache:'no-store'});
+            if (!response.ok) return; // غير الأدمن لا يرى تفاصيل التخزين.
+            const data = await response.json();
+            if (data && data.success && data.is_railway && !data.persistent) {
+                banner.style.display = 'block';
+                banner.textContent = '⚠️ تنبيه حفظ الملفات: لم نكتشف Railway Volume مربوطاً بالخدمة. ربط GitHub وحده لا يحفظ ملفات السيرفرات بعد التحديث. اربط Volume بمسار /data في خدمة Railway ثم أعد النشر؛ لا تضغط Wipe Volume.';
+            } else {
+                banner.style.display = 'none';
+            }
+        } catch (_) {}
+    }
+
     // ===== بدء التشغيل =====
     checkAuth();
+    checkPersistenceStatus();
 </script>
 </body>
 </html>

@@ -87,6 +87,7 @@
         .server-type-badge { display: inline-block; padding: 2px 12px; border-radius: 30px; font-size: 0.65rem; font-weight: 600; }
         .server-type-badge.python { background: rgba(45, 122, 255, 0.2); color: #2d7aff; }
         .server-type-badge.php { background: rgba(119, 123, 180, 0.2); color: #777bb4; }
+        .badge-static { background: rgba(16,185,129,.16); color:#5eead4; }
         .servers-header-actions { display: flex; gap: 12px; flex-wrap: wrap; }
         .filter-btn { background: rgba(255,255,255,0.05); border: 1px solid rgba(45,122,255,0.2); border-radius: 30px; padding: 6px 16px; color: #9ca3cf; cursor: pointer; transition: 0.2s; font-size: 0.75rem; }
         .filter-btn.active { background: rgba(45,122,255,0.2); border-color: #2d7aff; color: #2d7aff; }
@@ -499,6 +500,9 @@
         } else if (type === 'PHP') {
             label.innerHTML = '🐘 PHP';
             title.innerHTML = '<i class="fab fa-php"></i> إنشاء خادم PHP';
+        } else if (type === 'Static') {
+            label.innerHTML = '🌐 HTML / CSS / JavaScript';
+            title.innerHTML = '<i class="fas fa-code"></i> إنشاء موقع HTML ثابت';
         } else {
             label.innerHTML = '🟨 Node.js';
             title.innerHTML = '<i class="fab fa-node-js"></i> إنشاء خادم Node.js';
@@ -646,8 +650,9 @@
             }
             
             // تعريف أيقونات وأنواع السيرفرات بشكل صحيح
-            const typeIcons = { 'Python': '🐍', 'PHP': '🐘', 'Node.js': '🟨' };
-            const typeColors = { 'Python': 'badge-python', 'PHP': 'badge-php', 'Node.js': 'badge-node' };
+            const typeIcons = { 'Python': '🐍', 'PHP': '🐘', 'Node.js': '🟨', 'Static': '🌐' };
+            const typeNames = { 'Python': 'Python', 'PHP': 'PHP', 'Node.js': 'Node.js', 'Static': 'HTML/CSS/JS' };
+            const typeColors = { 'Python': 'badge-python', 'PHP': 'badge-php', 'Node.js': 'badge-node', 'Static': 'badge-static' };
             
             tbody.innerHTML = allServers.map(s => {
                 const type = s.type || 'Python';
@@ -657,7 +662,7 @@
                     <tr data-server-type="${type}">
                         <td>${escapeHtml(s.title)}</td>
                         <td>${escapeHtml(s.owner)}</td>
-                        <td><span class="badge ${typeClass}">${icon} ${type}</span></td>
+                        <td><span class="badge ${typeClass}">${icon} ${typeNames[type] || type}</span></td>
                         <td><span class="badge ${s.status === 'Running' ? 'badge-admin' : ''}" style="${s.status !== 'Running' ? 'background:#555;' : ''}">${s.status === 'Running' ? '🟢 نشط' : '⚫ متوقف'}</span></td>
                         <td style="font-size:11px;">${(s.created_at || '').substring(0,10)}</td>
                         <td><button class="btn-secondary" onclick="openAdminFiles('${s.folder}', '${escapeHtml(s.owner)}')"><i class="fas fa-folder-open"></i> الملفات</button><button class="action-btn delete" onclick="deleteServer('${s.folder}')"><i class="fas fa-trash"></i></button></td>
