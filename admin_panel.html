@@ -165,6 +165,10 @@
         <div class="card">
             <div class="card-title"><i class="fas fa-chart-simple"></i> نظرة عامة</div>
             <p style="color:#9ca3cf; margin-bottom: 16px;">مرحباً في لوحة التحكم المركزية. يمكنك مراقبة وإدارة جميع جوانب المنصة.</p>
+            <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:center;margin:16px 0;padding:14px;border:1px solid rgba(45,122,255,.25);border-radius:16px;background:rgba(45,122,255,.06);">
+                <div style="flex:1;min-width:220px;"><strong style="color:#00e5ff;">نسخة احتياطية كاملة</strong><div style="font-size:.82rem;color:#9ca3cf;margin-top:5px;line-height:1.7;">تصدير قاعدة بيانات المنصة ومجلدات المشاريع وملفات المستخدمين في ZIP واحد للنقل أو الحفظ.</div></div>
+                <button class="btn-primary" onclick="downloadFullMazajiBackup()"><i class="fas fa-file-zipper"></i> تنزيل النسخة الاحتياطية الكاملة</button>
+            </div>
             <div class="chart-container">
                 <canvas id="userGrowthChart"></canvas>
             </div>
@@ -193,7 +197,7 @@
             <div class="form-row">
                 <div class="form-group">
                     <label>عدد السيرفرات المسموح بها</label>
-                    <input type="number" id="maxServers" placeholder="2" value="2" min="1" max="100">
+                    <input type="number" id="maxServers" placeholder="2" value="2" min="1" max="1000000">
                 </div>
                 <div class="form-group">
                     <label>الحد الأقصى لملفات المستخدم (افتراضي 10)</label>
@@ -209,7 +213,7 @@
 
         <div class="card">
             <div class="card-title"><i class="fas fa-sliders-h"></i> الحد الأقصى لملفات المستخدم</div>
-            <p style="color:#9ca3cf;font-size:.82rem;line-height:1.7;margin-bottom:14px;">اختر المستخدم، ثم اكتب العدد المسموح به. الحد الافتراضي للحساب الجديد هو 10 ملفات، ويمكن تغييره لاحقًا.</p>
+            <p style="color:#9ca3cf;font-size:.82rem;line-height:1.7;margin-bottom:14px;">هذا الحد يحسب مجموع الملفات داخل مشاريع المستخدم. أمّا عدد المشاريع/السيرفرات التي يستطيع إنشاؤها أو رفع مشروع جديد إليها فهو حد مستقل يُعدّل من عمود «السيرفرات» أدناه؛ مثلًا إذا بقي حد السيرفرات 2 فسيظل زر «رفع ملف وتشغيله تلقائيًا» يسمح بمشروعين فقط.</p>
             <div class="form-row">
                 <div class="form-group"><label for="fileLimitUser">المستخدم</label><select id="fileLimitUser" style="width:100%;padding:12px 16px;background:#070b15;border:1px solid rgba(45,122,255,.4);border-radius:14px;color:#fff;"><option value="">تحميل المستخدمين...</option></select></div>
                 <div class="form-group"><label for="fileLimitValue">الحد الأقصى للملفات</label><input type="number" id="fileLimitValue" min="1" max="1000000" value="10" /></div>
@@ -224,7 +228,7 @@
             </div>
             <table class="data-table">
                 <thead>
-                    <tr><th>اسم المستخدم</th><th>النوع</th><th>الخطة</th><th>السيرفرات</th><th>حد الملفات</th><th>الصلاحية</th><th>تاريخ الإنشاء</th><th>الإجراءات</th></tr>
+                    <tr><th>اسم المستخدم</th><th>النوع</th><th>الخطة</th><th>حد السيرفرات/المشاريع</th><th>حد الملفات داخل المشاريع</th><th>الصلاحية</th><th>تاريخ الإنشاء</th><th>الإجراءات</th></tr>
                 </thead>
                 <tbody id="usersList"></tbody>
             </table>
@@ -627,7 +631,13 @@
                     <td><strong>${escapeHtml(u.username)}</strong></td>
                     <td><span class="badge ${u.is_admin ? 'badge-admin' : 'badge-user'}">${u.is_admin ? '👑 مسؤول' : '👤 مستخدم'}</span></td>
                     <td>${u.plan || 'free'}</td>
-                    <td>${u.max_servers}</td>
+                    <td style="min-width:170px;">
+                        <div style="display:flex;gap:6px;align-items:center;">
+                            <input type="number" min="1" max="1000000" value="${Number(u.max_servers || 2)}" aria-label="حد السيرفرات ${escapeHtml(u.username)}" style="width:86px;padding:7px;background:#070b15;border:1px solid rgba(45,122,255,.4);border-radius:10px;color:#fff;" />
+                            <button class="btn-success" data-user="${escapeHtml(u.username)}" onclick="updateUserMaxServers(this.dataset.user,this.parentElement.querySelector('input').value)" style="padding:7px 10px;">حفظ</button>
+                        </div>
+                        <div style="font-size:.7rem;color:#9ca3cf;margin-top:5px;">حد إنشاء/رفع المشاريع</div>
+                    </td>
                     <td style="min-width:170px;">
                         <div style="display:flex;gap:6px;align-items:center;">
                             <input type="number" min="1" max="1000000" value="${Number(u.max_files || 10)}" aria-label="حد ملفات ${escapeHtml(u.username)}" style="width:86px;padding:7px;background:#070b15;border:1px solid rgba(45,122,255,.4);border-radius:10px;color:#fff;" />
@@ -918,6 +928,29 @@
         const value = document.getElementById('fileLimitValue').value;
         if (!username) { showToast('اختر مستخدمًا أولًا', 'error'); return; }
         await updateUserMaxFiles(username, value);
+    }
+
+    async function updateUserMaxServers(username, value) {
+        const max_servers = Number.parseInt(value, 10);
+        if (!Number.isInteger(max_servers) || max_servers < 1 || max_servers > 1000000) {
+            showToast('أدخل حدًا صحيحًا بين 1 و1,000,000 مشروع', 'error');
+            return;
+        }
+        try {
+            const r = await fetch('/api/admin/update-user', {
+                method: 'POST', headers: {'Content-Type':'application/json'},
+                body: JSON.stringify({username, max_servers})
+            });
+            const d = await r.json();
+            if (!r.ok || !d.success) throw new Error(d.message || 'تعذر تحديث حد السيرفرات');
+            showToast(`تم ضبط حد مشاريع ${username} إلى ${max_servers}`, 'success');
+            await loadUsers();
+        } catch (e) { showToast(e.message || 'خطأ في الاتصال', 'error'); }
+    }
+
+    function downloadFullMazajiBackup() {
+        if (!confirm('سيتم تنزيل نسخة حساسة تشمل قاعدة بيانات المنصة وملفات ومشاريع المستخدمين. احتفظ بها في مكان آمن. متابعة؟')) return;
+        window.location.href = '/api/admin/backup/full';
     }
 
     async function updateUserMaxFiles(username, value) {

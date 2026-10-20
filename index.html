@@ -999,11 +999,13 @@
                 <span style="font-size:0.95rem;">اسحب الملفات هنا أو انقر للرفع</span>
                 <div style="font-size:0.72rem;color:#9ca3cf;margin-top:6px;">يدعم: Python, Node.js, PHP, Ruby, Java, Go, Rust, HTML/CSS/JS وZIP وغيرها</div>
             </div>
+            <div id="filesQuotaInfo" style="margin:12px 0 16px;padding:12px 16px;border:1px solid rgba(45,122,255,.25);border-radius:14px;background:rgba(45,122,255,.07);color:#cbd8f8;font-size:.84rem;line-height:1.7;">جاري قراءة حد الملفات...</div>
             <input type="file" id="fileUpload" multiple style="display:none" onchange="uploadFiles(this.files)">
             <div style="margin-bottom: 16px; display: flex; gap: 10px; flex-wrap: wrap;">
                 <button class="glow-btn" onclick="showCreateFileModal()" style="background:#2d7aff;"><i class="fas fa-file"></i> ملف جديد</button>
                 <button class="glow-btn" onclick="installPackages()" style="background:#2d7aff;"><i class="fas fa-cube"></i> تثبيت المكتبات</button>
                 <button class="glow-btn" onclick="showCreateFolderModal()" style="background:#2d7aff;"><i class="fas fa-folder-plus"></i> مجلد جديد</button>
+                <button class="glow-btn" onclick="exportCurrentServerBackup()" style="background:linear-gradient(135deg,#0f766e,#0891b2);"><i class="fas fa-file-zipper"></i> تصدير نسخة احتياطية للبوت</button>
                 <button class="glow-btn delete-all-files-btn" onclick="deleteAllFiles()" style="background:linear-gradient(135deg,#d90429,#9d0208);"><i class="fas fa-trash-can"></i> حذف الكل</button>
             </div>
             <div class="files-list-wrap" id="filesList"></div>
@@ -1106,6 +1108,18 @@
   </div>
 </div></div>
 
+<!-- Arabic display name / file description modal -->
+<div id="fileDescriptionModal" class="modal"><div class="modal-content" style="max-width:560px;">
+  <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:14px;">
+    <h3 style="margin:0;color:#00e5ff;"><i class="fas fa-language"></i> اسم الملف ووصفه بالعربية</h3>
+    <button onclick="closeFileDescriptionModal()" style="background:none;border:0;color:#fff;font-size:1.2rem;">✕</button>
+  </div>
+  <div style="font-size:.78rem;color:#9ca3cf;margin-bottom:12px;line-height:1.7;">هذا الاسم والوصف للعرض فقط؛ لن نغيّر اسم الملف الحقيقي أو مساره حتى لا يتعطل البوت.</div>
+  <div class="form-group"><label for="fileDisplayNameInput">الاسم العربي المعروض</label><input id="fileDisplayNameInput" maxlength="120" type="text" placeholder="مثال: قاعدة بيانات البوت" style="width:100%;padding:12px;background:#010409;border:1px solid #2d7aff;border-radius:14px;color:white;font-family:'Tajawal',sans-serif;"></div>
+  <div class="form-group"><label for="fileDescriptionInput">وصف وظيفة الملف</label><textarea id="fileDescriptionInput" maxlength="1200" rows="4" placeholder="مثال: يحفظ بيانات المستخدمين والإعدادات الخاصة بالبوت" style="width:100%;padding:12px;background:#010409;border:1px solid #2d7aff;border-radius:14px;color:white;font-family:'Tajawal',sans-serif;resize:vertical;"></textarea></div>
+  <div style="display:flex;gap:10px;margin-top:14px;flex-wrap:wrap;"><button class="glow-btn" style="flex:1;background:#0f766e;" onclick="saveFileDescription()"><i class="fas fa-save"></i> حفظ الاسم والوصف</button><button class="glow-btn" style="flex:1;background:#333;" onclick="clearFileDescription()">إرجاع الوصف الافتراضي</button><button class="glow-btn" style="flex:1;background:#333;" onclick="closeFileDescriptionModal()">إلغاء</button></div>
+</div></div>
+
 <!-- Rename Modal -->
 <div id="renameModal" class="rename-modal">
   <div class="rename-modal-box">
@@ -1129,6 +1143,7 @@
 
 <script>
     let currentServer = null, polling = null, currentFile = null, editorOriginalContent = '', confirmAction = null, selectedPlan = null;
+    let descriptionTargetFile = null, descriptionTargetDefaults = {display_name:'', description:''};
 
     const showToast = (msg, type='info') => { const t = document.getElementById('toast'); t.innerHTML = `<i class="fas ${type==='success'?'fa-check-circle':type==='error'?'fa-exclamation-circle':'fa-info-circle'}"></i> ${msg}`; t.style.display='block'; setTimeout(()=>t.style.display='none',3000); };
     const showConfirm = (msg, cb) => { document.getElementById('confirmMsg').innerText = msg; confirmAction = cb; document.getElementById('confirmModal').classList.add('active'); };
@@ -1578,10 +1593,25 @@
     }
 
     // ===== دوال الملفات والإعدادات =====
+    async function updateFilesQuotaInfo() {
+        if (!currentServer) return;
+        const info = document.getElementById('filesQuotaInfo');
+        if (!info) return;
+        try {
+            const r = await fetch(`/api/files/quota/${encodeURIComponent(currentServer.folder)}`);
+            const d = await r.json();
+            if (!r.ok || !d.success) throw new Error(d.message || 'تعذر قراءة الحد');
+            info.innerHTML = `<strong>حد الملفات الفعلي:</strong> ${Number(d.used)} / ${Number(d.limit)} ملفًا · <strong>المتبقي:</strong> ${Number(d.remaining)}. <div style="font-size:.76rem;color:#9ca3cf;margin-top:3px;">هذا حد الملفات داخل المشاريع. حد عدد المشاريع المستقلة يظهر في بطاقة «السيرفرات المستخدمة» ويضبطه المسؤول بشكل منفصل.</div>`;
+        } catch (_) {
+            info.textContent = 'تعذر قراءة حد الملفات حاليًا.';
+        }
+    }
+
     async function loadFiles() {
         if(!currentServer) return;
         const list = document.getElementById('filesList');
         list.innerHTML = '<div style="padding:30px;text-align:center;color:#9ca3cf;">جاري تحميل الملفات...</div>';
+        updateFilesQuotaInfo();
         try {
             const r = await fetch(`/api/files/list/${encodeURIComponent(currentServer.folder)}`);
             if(!r.ok) throw new Error('files');
@@ -1591,20 +1621,26 @@
                 return;
             }
             list.innerHTML = files.map(f => {
-                const jsName = JSON.stringify(f.name);
                 const icon = f.is_dir ? 'fa-folder' : (f.name.toLowerCase().endsWith('.zip') ? 'fa-file-zipper' : 'fa-file-code');
                 const safe = escapeHtml(f.name);
-                return `<div class="file-card" data-file-name="${safe}" data-is-dir="${f.is_dir ? '1' : '0'}">
+                const displayTitle = escapeHtml(f.display_name || f.name.split('/').pop());
+                const description = escapeHtml(f.description || 'أضف وصفًا عربيًا لتوضيح وظيفة هذا الملف.');
+                return `<div class="file-card" data-file-name="${safe}" data-is-dir="${f.is_dir ? '1' : '0'}" data-display-name="${displayTitle}" data-description="${description}">
                     <div class="file-main">
                         <input type="checkbox" class="file-checkbox file-check" value="${safe}" aria-label="تحديد ${safe}">
                         <div class="file-icon"><i class="fas ${icon}"></i></div>
-                        <div class="file-info"><div class="file-name">${safe}</div><div class="file-meta">${f.is_dir ? 'مجلد' : f.size}</div></div>
+                        <div class="file-info">
+                            <div class="file-name">${displayTitle}</div>
+                            <div style="font-size:.8rem;color:#a9b7d9;line-height:1.6;margin-top:4px;overflow-wrap:anywhere;">${description}</div>
+                            <div class="file-meta">${f.is_dir ? 'مجلد' : f.size} · الاسم الأصلي: <span dir="ltr" style="overflow-wrap:anywhere;">${safe}</span></div>
+                        </div>
                     </div>
                     <div class="file-actions">
+                        <button type="button" class="file-btn" style="background:rgba(15,118,110,.24);border-color:rgba(20,184,166,.35);color:#7de8df;" data-file-action="describe"><i class="fas fa-language"></i><span>تعديل الاسم والوصف</span></button>
                         ${!f.is_dir ? `<button type="button" class="file-btn edit" data-file-action="edit"><i class="fas fa-folder-open"></i><span>فتح الملف</span></button>
                         <button type="button" class="file-btn replace" data-file-action="replace"><i class="fas fa-repeat"></i><span>تبديل الملف</span></button>
                         <button type="button" class="file-btn download" data-file-action="download"><i class="fas fa-download"></i><span>تنزيل</span></button>` : ''}
-                        <button type="button" class="file-btn rename" data-file-action="rename"><i class="fas fa-i-cursor"></i><span>تغيير الاسم</span></button>
+                        <button type="button" class="file-btn rename" data-file-action="rename"><i class="fas fa-i-cursor"></i><span>تغيير الاسم الحقيقي</span></button>
                         ${f.name.toLowerCase().endsWith('.zip') ? `<button type="button" class="file-btn unzip" data-file-action="unzip"><i class="fas fa-file-archive"></i><span>فك الضغط</span></button>` : ''}
                         <button type="button" class="file-btn delete" data-file-action="delete"><i class="fas fa-trash"></i><span>حذف الملف</span></button>
                     </div>
@@ -1629,7 +1665,8 @@
             if (!name || !currentServer) return showToast('لم يتم تحديد الملف', 'error');
             button.disabled = true;
             try {
-                if (action === 'edit') await editFile(name);
+                if (action === 'describe') openFileDescriptionModal(name, card?.dataset.displayName || '', card?.dataset.description || '');
+                else if (action === 'edit') await editFile(name);
                 else if (action === 'replace') await replaceFile(name);
                 else if (action === 'download') downloadFile(name);
                 else if (action === 'rename') openRenameModal(name);
@@ -1650,6 +1687,49 @@
         try { d = text ? JSON.parse(text) : {}; } catch (_) { d = {success:false, message:'استجابة غير صالحة من الخادم'}; }
         if (!r.ok || d.success === false) throw new Error(d.message || `فشل الطلب (${r.status})`);
         return d;
+    }
+
+    function openFileDescriptionModal(name, displayName, description) {
+        descriptionTargetFile = name;
+        descriptionTargetDefaults = {display_name: displayName || '', description: description || ''};
+        document.getElementById('fileDisplayNameInput').value = displayName || '';
+        document.getElementById('fileDescriptionInput').value = description || '';
+        document.getElementById('fileDescriptionModal').classList.add('active');
+    }
+    function closeFileDescriptionModal() {
+        document.getElementById('fileDescriptionModal').classList.remove('active');
+        descriptionTargetFile = null;
+    }
+    async function saveFileDescription() {
+        if (!currentServer || !descriptionTargetFile) return;
+        const display_name = document.getElementById('fileDisplayNameInput').value.trim();
+        const description = document.getElementById('fileDescriptionInput').value.trim();
+        try {
+            const d = await apiJson(`/api/files/metadata/${encodeURIComponent(currentServer.folder)}`, {
+                method:'POST', headers:{'Content-Type':'application/json'},
+                body:JSON.stringify({name: descriptionTargetFile, display_name, description})
+            });
+            closeFileDescriptionModal();
+            showToast(d.message || 'تم حفظ الوصف', 'success');
+            await loadFiles();
+        } catch (e) { showToast(e.message || 'تعذر حفظ الوصف', 'error'); }
+    }
+    async function clearFileDescription() {
+        if (!currentServer || !descriptionTargetFile) return;
+        try {
+            await apiJson(`/api/files/metadata/${encodeURIComponent(currentServer.folder)}`, {
+                method:'POST', headers:{'Content-Type':'application/json'},
+                body:JSON.stringify({name: descriptionTargetFile, display_name:'', description:''})
+            });
+            closeFileDescriptionModal();
+            showToast('تم إرجاع الاسم والوصف الافتراضيين', 'success');
+            await loadFiles();
+        } catch (e) { showToast(e.message || 'تعذر إعادة الوصف', 'error'); }
+    }
+    function exportCurrentServerBackup() {
+        if (!currentServer) return showToast('افتح السيرفر أولاً', 'error');
+        if (!confirm('سيتم تنزيل ZIP يحتوي ملفات هذا البوت وبياناته الموجودة داخل مجلد المشروع، مع الأوصاف العربية. لن تتضمن النسخة حسابات المنصة العامة. متابعة؟')) return;
+        window.location.href = `/api/server/export/${encodeURIComponent(currentServer.folder)}`;
     }
 
     async function editFile(name) {

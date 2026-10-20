@@ -1328,7 +1328,7 @@ def get_user_servers_dir(username):
 FILE_COUNT_EXCLUDED_DIRS = {".venv", "venv", "node_modules", "__pycache__", ".git", ".pytest_cache", ".mypy_cache"}
 # These files are owned by the hosting app, not by the uploaded project. Keep their
 # special treatment limited to the project root so nested user files still count.
-FILE_COUNT_EXCLUDED_NAMES = {"out.log", "errors.log", "server.log", "meta.json", ".mazagi_dependencies_hash"}
+FILE_COUNT_EXCLUDED_NAMES = {"out.log", "errors.log", "server.log", "meta.json", ".mazagi_dependencies_hash", "MAZAGI_BACKUP_MANIFEST.json", "MAZAGI_BACKUP_README_AR.txt"}
 RESERVED_ROOT_FILES = {name.casefold() for name in FILE_COUNT_EXCLUDED_NAMES}
 RESERVED_TEMP_PREFIXES = (".mazagi-save-", ".mazagi-replace-")
 
@@ -1351,6 +1351,119 @@ def is_reserved_project_path(relative_name):
     if is_reserved_temp_name(parts[-1]):
         return True
     return len(parts) == 1 and is_reserved_root_file(parts[0])
+
+
+def _json_file_description(full_path):
+    """Describe a small JSON data file from its key names only, never expose stored values."""
+    if not full_path or not os.path.isfile(full_path):
+        return ""
+    try:
+        if os.path.getsize(full_path) > 1024 * 1024:
+            return ""
+        with open(full_path, "r", encoding="utf-8-sig") as handle:
+            value = json.load(handle)
+        if isinstance(value, dict):
+            keys = list(value.keys())[:20]
+        elif isinstance(value, list) and value and isinstance(value[0], dict):
+            keys = list(value[0].keys())[:20]
+        else:
+            return "ملف JSON يحتوي على بيانات محفوظة؛ بنيته لا تعرض أقسامًا مسماة بوضوح."
+        if not keys:
+            return "ملف JSON فارغ حاليًا أو لا يحتوي على مفاتيح."
+        labels = {
+            "users": "المستخدمون", "user": "بيانات المستخدم", "user_data": "بيانات المستخدمين",
+            "users_data": "بيانات المستخدمين", "balances": "الأرصدة", "balance": "الرصيد",
+            "wallets": "المحافظ والأرصدة", "stats": "الإحصائيات", "statistics": "الإحصائيات",
+            "orders": "الطلبات", "transactions": "المعاملات", "settings": "الإعدادات",
+            "config": "الإعدادات", "servers": "السيرفرات", "bots": "البوتات",
+            "tokens": "الرموز", "bot_tokens": "رموز البوتات", "api_keys": "مفاتيح API",
+            "points": "النقاط", "referrals": "الإحالات", "subscriptions": "الاشتراكات",
+            "payments": "المدفوعات", "rewards": "المكافآت", "logs": "السجلات",
+            "groups": "المجموعات", "chats": "المحادثات", "messages": "الرسائل",
+            "history": "السجل", "users_count": "إحصائيات المستخدمين"
+        }
+        translated = []
+        for key in keys[:8]:
+            raw_key = str(key)[:60]
+            translated.append(labels.get(raw_key.casefold(), raw_key))
+        return "الأقسام أو المفاتيح الموجودة: " + "، ".join(translated) + ". تم فحص أسماء المفاتيح فقط دون عرض قيم البيانات."
+    except Exception:
+        return "ملف JSON محفوظ؛ تعذر تحديد أقسامه تلقائيًا، ويمكنك كتابة وصفه يدويًا."
+
+
+def _default_file_display_info(relative_name, is_dir=False, full_path=None):
+    """Return a safe Arabic-friendly title/description without renaming real files."""
+    normalized = str(relative_name or "").replace("\\", "/").strip("/")
+    base = normalized.rsplit("/", 1)[-1]
+    lower = base.casefold()
+    stem, ext = os.path.splitext(base)
+    json_description = _json_file_description(full_path) if ext.lower() == ".json" else ""
+
+    if is_dir:
+        if lower in {"بيانات_البوتات", "بيانات البوتات", "bot_data", "bots_data", "botdata", "data"}:
+            return ("مجلد بيانات البوت", "مجلد لتجميع ملفات بيانات البوت. راجع الملفات بداخله لمعرفة تفاصيل البيانات المحفوظة.")
+        if lower in {"database", "databases", "db"}:
+            return ("مجلد قاعدة البيانات", "مجلد مخصص لملفات قواعد البيانات أو نسخها الاحتياطية.")
+        if lower in {"config", "configs", "settings"}:
+            return ("مجلد الإعدادات", "يحتوي غالبًا على ملفات إعدادات المشروع.")
+        return ("مجلد المشروع", "مجلد فرعي داخل المشروع. الاسم والمسار الأصليان محفوظان كما هما.")
+
+    if lower in {"bots_data.json", "bot_data.json", "database.json", "db.json", "database.db", "data.db", "database.sqlite", "database.sqlite3", "bot.db", "users.db"} or ext.lower() in {".sqlite", ".sqlite3"}:
+        return ("قاعدة بيانات البوت", json_description or "ملف بيانات محفوظ. قد يحتوي على مستخدمين أو إعدادات أو سجلات بحسب طريقة كتابة البوت؛ لا يتم تغيير محتواه أو اسمه الأصلي.")
+    if lower in {"users.json", "user_data.json", "users_data.json"}:
+        return ("بيانات المستخدمين", json_description or "ملف يُستخدم غالبًا لحفظ سجلات المستخدمين. افحص بنية البيانات داخله للتأكد من الحقول الموجودة.")
+    if lower in {"config.json", "settings.json", "config.py", "settings.py", ".env", "example.env"} or lower.endswith(".env"):
+        return ("إعدادات المشروع", "قد يحتوي على إعدادات تشغيل أو مفاتيح سرية؛ لا تشاركه علنًا.")
+    if lower in {"requirements.txt", "pyproject.toml", "pipfile"}:
+        return ("متطلبات Python", "قائمة المكتبات أو إعدادات البيئة التي يحتاجها مشروع Python.")
+    if lower == "package.json":
+        return ("إعدادات Node.js", "يحتوي على معلومات المشروع واعتماديات وأوامر تشغيل Node.js.")
+    if lower in {"package-lock.json", "pnpm-lock.yaml", "yarn.lock"}:
+        return ("قفل إصدارات المكتبات", "يساعد على تثبيت إصدارات الاعتماديات نفسها عند إعادة بناء المشروع.")
+    if lower in {"main.py", "app.py", "bot.py", "telegram_bot.py", "index.py", "run.py"}:
+        return ("ملف تشغيل البرنامج", "يحتوي غالبًا على نقطة الدخول أو منطق البرنامج. ملف التشغيل الفعلي تحدده إعدادات السيرفر.")
+    if ext.lower() in {".py", ".js", ".mjs", ".cjs", ".php", ".rb", ".go", ".rs", ".java"}:
+        labels = {".py": "ملف Python", ".js": "ملف JavaScript", ".mjs": "ملف JavaScript", ".cjs": "ملف JavaScript", ".php": "ملف PHP", ".rb": "ملف Ruby", ".go": "ملف Go", ".rs": "ملف Rust", ".java": "ملف Java"}
+        return (labels.get(ext.lower(), "ملف برمجي"), "ملف برمجي ضمن المشروع. الاسم والمسار الأصليان محفوظان، ويمكنك إضافة وصف يشرح وظيفته بالتحديد.")
+    if ext.lower() in {".json", ".yaml", ".yml", ".toml", ".ini"}:
+        return ("ملف بيانات أو إعدادات", json_description or "ملف منظم للبيانات أو الإعدادات. المحتوى الدقيق يعتمد على المفاتيح الموجودة داخله.")
+    if ext.lower() in {".log", ".out"}:
+        return ("سجل التشغيل", "قد يحتوي على رسائل تشغيل أو أخطاء تساعد في تشخيص المشكلات.")
+    if ext.lower() == ".zip":
+        return ("أرشيف مضغوط", "حزمة ملفات يمكن تنزيلها أو فك ضغطها داخل المشروع بعد التحقق من محتوياتها.")
+    if ext.lower() in {".txt", ".md", ".rst"}:
+        return ("ملف نصي أو توثيق", "قد يحتوي على تعليمات أو ملاحظات أو توثيق للمشروع.")
+    if ext.lower() in {".html", ".htm"}:
+        return ("صفحة ويب", "ملف HTML لواجهة أو صفحة ضمن الموقع.")
+    if ext.lower() == ".css":
+        return ("تنسيقات الواجهة", "ملف CSS يتحكم بمظهر عناصر صفحة الويب.")
+    if ext.lower() in {".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg"}:
+        return ("صورة أو مورد رسومي", "ملف صورة قد يستخدمه المشروع في الواجهة أو المحتوى.")
+    return ("ملف المشروع", "لم يُحدد وصف تلقائي دقيق لهذا الملف. استخدم زر «تعديل الاسم والوصف» لتوثيق وظيفته.")
+
+
+def _sanitize_file_metadata_map(raw_map, server_path=None):
+    """Validate metadata records before storing or restoring a backup manifest."""
+    if not isinstance(raw_map, dict):
+        return {}
+    output = {}
+    for raw_path, raw_value in list(raw_map.items())[:5000]:
+        if not isinstance(raw_path, str) or not isinstance(raw_value, dict):
+            continue
+        rel = raw_path.replace("\\", "/").strip("/")
+        parts = [p for p in rel.split("/") if p]
+        if not parts or any(p in {".", ".."} for p in parts) or rel.startswith("/"):
+            continue
+        display_name = str(raw_value.get("display_name", "")).strip()[:120]
+        description = str(raw_value.get("description", "")).strip()[:1200]
+        if not display_name and not description:
+            continue
+        if server_path:
+            candidate = safe_relative_path(server_path, rel)
+            if not candidate or not os.path.exists(candidate) or os.path.islink(candidate):
+                continue
+        output[rel] = {"display_name": display_name, "description": description}
+    return output
 
 
 def user_max_files(user_or_username):
@@ -2327,10 +2440,18 @@ def list_server_files(folder):
                         size_str = f"{size_bytes/1024:.1f} KB"
                     else:
                         size_str = f"{size_bytes/(1024*1024):.1f} MB"
+                    is_dir = os.path.isdir(full)
+                    default_title, default_description = _default_file_display_info(rel, is_dir, full)
+                    custom_info = (srv.get("file_metadata") or {}).get(rel, {})
+                    if not isinstance(custom_info, dict):
+                        custom_info = {}
                     files.append({
                         "name": rel,
+                        "display_name": str(custom_info.get("display_name") or default_title)[:120],
+                        "description": str(custom_info.get("description") or default_description)[:1200],
+                        "has_custom_description": bool(custom_info.get("display_name") or custom_info.get("description")),
                         "size": size_str,
-                        "is_dir": os.path.isdir(full),
+                        "is_dir": is_dir,
                         "modified": datetime.fromtimestamp(stat.st_mtime).strftime('%Y-%m-%d %H:%M'),
                         "is_zip": rel.lower().endswith('.zip')
                     })
@@ -2339,6 +2460,48 @@ def list_server_files(folder):
     except Exception as exc:
         return jsonify({"success": False, "message": str(exc)}), 500
     return jsonify(sorted(files, key=lambda x: (x['name'].count('/'), not x['is_dir'], x['name'].lower())))
+
+@app.route('/api/files/metadata/<folder>', methods=['POST'])
+def update_file_display_metadata(folder):
+    if "username" not in session:
+        return jsonify({"success": False, "message": "غير مصرح"}), 401
+    srv = db["servers"].get(folder)
+    if not srv or srv.get("owner") != session["username"]:
+        return jsonify({"success": False, "message": "غير مصرح"}), 403
+    data = request.get_json(silent=True) or {}
+    if not isinstance(data, dict):
+        return jsonify({"success": False, "message": "بيانات الطلب غير صالحة"}), 400
+    name = str(data.get("name", "")).strip()
+    fpath = safe_relative_path(srv.get("path", ""), name)
+    if not name or not fpath or not os.path.exists(fpath) or os.path.islink(fpath) or has_symlink_component(srv.get("path", ""), name):
+        return jsonify({"success": False, "message": "الملف أو المجلد غير موجود أو مساره غير صالح"}), 400
+    rel = os.path.relpath(fpath, os.path.realpath(srv["path"])).replace(os.sep, "/")
+    if is_reserved_project_path(rel):
+        return jsonify({"success": False, "message": "لا يمكن تعديل وصف ملف داخلي للنظام"}), 400
+    display_name = str(data.get("display_name", "")).strip()[:120]
+    description = str(data.get("description", "")).strip()[:1200]
+    metadata = srv.setdefault("file_metadata", {})
+    if not display_name and not description:
+        metadata.pop(rel, None)
+    else:
+        metadata[rel] = {"display_name": display_name, "description": description}
+    if not save_db(db):
+        return jsonify({"success": False, "message": "تعذر حفظ الاسم والوصف في قاعدة البيانات"}), 500
+    return jsonify({"success": True, "message": "تم حفظ الاسم والوصف العربيين"})
+
+
+@app.route('/api/files/quota/<folder>')
+def get_user_file_quota(folder):
+    if "username" not in session:
+        return jsonify({"success": False, "message": "غير مصرح"}), 401
+    srv = db.get("servers", {}).get(folder)
+    if not srv or srv.get("owner") != session.get("username"):
+        return jsonify({"success": False, "message": "غير مصرح"}), 403
+    username = session["username"]
+    used = count_user_files(username)
+    limit = user_max_files(db.get("users", {}).get(username, {}))
+    return jsonify({"success": True, "used": used, "limit": limit, "remaining": max(0, limit - used)})
+
 
 @app.route('/api/files/download/<folder>/<path:filename>')
 def download_user_file(folder, filename):
@@ -2501,8 +2664,8 @@ def _auto_install_after_upload(srv_path: str, server_type: str, log_path: str):
             pass
 
 
-def safe_extract_zip(zip_file, destination):
-    """Extract ZIP safely: reject path traversal, symlinks, duplicate targets, and app-owned names."""
+def safe_extract_zip(zip_file, destination, allow_backup_metadata=False):
+    """Extract ZIP safely, optionally permitting Mazaji's own root backup manifest files."""
     base = os.path.realpath(os.path.abspath(destination))
     os.makedirs(base, exist_ok=True)
     seen_targets = set()
@@ -2515,7 +2678,8 @@ def safe_extract_zip(zip_file, destination):
         if not parts or any(part == ".." for part in parts):
             raise ValueError("أرشيف ZIP يحاول الكتابة خارج مجلد المشروع")
         relative_name = "/".join(parts)
-        if is_reserved_project_path(relative_name):
+        is_root_backup_metadata = len(parts) == 1 and parts[0].casefold() in {"mazagi_backup_manifest.json", "mazagi_backup_readme_ar.txt"}
+        if is_reserved_project_path(relative_name) and not (allow_backup_metadata and is_root_backup_metadata):
             raise ValueError(f"أرشيف ZIP يحتوي اسمًا محجوزًا للنظام: {relative_name}")
         target = os.path.abspath(os.path.join(base, *parts))
         try:
@@ -2614,6 +2778,8 @@ def auto_create_server_from_upload():
     assigned_port = get_assigned_port()
     startup_file = filename if ext in {'.py','.js','.mjs','.cjs','.php','.rb','.java','.go','.rs','.html','.htm'} else ""
 
+    imported_file_metadata = {}
+    has_backup_manifest = False
     try:
         f.save(os.path.join(path, filename))
         if ext == '.zip':
@@ -2621,11 +2787,26 @@ def auto_create_server_from_upload():
             with zipfile.ZipFile(zip_path, 'r') as zf:
                 if zf.testzip():
                     raise ValueError("ملف ZIP تالف")
+                # Optional metadata manifest is used by Mazaji backups to preserve Arabic descriptions.
+                try:
+                    manifest_info = next((item for item in zf.infolist() if item.filename.replace("\\", "/").strip("/").casefold() == "mazagi_backup_manifest.json"), None)
+                    has_backup_manifest = bool(manifest_info)
+                    if manifest_info and manifest_info.file_size <= 2 * 1024 * 1024:
+                        manifest = json.loads(zf.read(manifest_info).decode("utf-8"))
+                        if isinstance(manifest, dict):
+                            imported_file_metadata = _sanitize_file_metadata_map(manifest.get("file_metadata", {}))
+                except Exception:
+                    imported_file_metadata = {}
                 archive_files = count_zip_files(zf)
                 if current_file_count + archive_files > max_file_count:
                     raise ValueError(f"المشروع يحتوي {archive_files} ملفًا، والمتبقي في الحد {max(0, max_file_count-current_file_count)}. زِد الحد من الإدارة أو اختر مشروعًا أصغر.")
-                safe_extract_zip(zf, path)
+                safe_extract_zip(zf, path, allow_backup_metadata=has_backup_manifest)
+            # Backup control files are not part of the runnable bot project.
+            for internal_name in ("MAZAGI_BACKUP_MANIFEST.json", "MAZAGI_BACKUP_README_AR.txt"):
+                try: os.remove(os.path.join(path, internal_name))
+                except OSError: pass
             normalize_extracted_project(path)
+            imported_file_metadata = _sanitize_file_metadata_map(imported_file_metadata, path)
             try:
                 os.remove(zip_path)  # the archive is only an import container; retain extracted project files
             except OSError:
@@ -2647,7 +2828,8 @@ def auto_create_server_from_upload():
             "plan": plan_id,
             "storage_limit": plan["storage"],
             "ram_limit": plan["ram"],
-            "cpu_limit": plan["cpu"]
+            "cpu_limit": plan["cpu"],
+            "file_metadata": imported_file_metadata
         }
         save_db(db)
 
@@ -2765,6 +2947,13 @@ def rename_file(folder):
         os.rename(old_path, new_path)
         if srv.get("startup_file") == old_name:
             srv["startup_file"] = new_name
+        file_metadata = srv.setdefault("file_metadata", {})
+        migrated = {}
+        for meta_path, meta_value in list(file_metadata.items()):
+            if meta_path == old_rel or meta_path.startswith(old_rel.rstrip("/") + "/"):
+                migrated[new_rel + meta_path[len(old_rel):]] = meta_value
+                file_metadata.pop(meta_path, None)
+        file_metadata.update(migrated)
         save_db(db)
         return jsonify({"success": True, "message": f"✅ تمت إعادة التسمية إلى {new_name}"})
     except Exception as e:
@@ -2784,6 +2973,7 @@ def unzip_file(folder, filename):
         return jsonify({"success": False, "message": "اسم ملف غير صالح"})
     if not os.path.exists(zip_path):
         return jsonify({"success": False, "message": "الملف غير موجود"})
+    has_backup_manifest = False
     try:
         with zipfile.ZipFile(zip_path, 'r') as zf:
             bad = zf.testzip()
@@ -2802,10 +2992,28 @@ def unzip_file(folder, filename):
                 dest = os.path.abspath(os.path.join(base, member_name))
                 if os.path.commonpath([base, dest]) != base:
                     return jsonify({"success": False, "message": "ZIP يحتوي مساراً غير آمن"}), 400
-            safe_extract_zip(zf, base)
+            imported_metadata = {}
+            try:
+                manifest_info = next((item for item in zf.infolist() if item.filename.replace("\\", "/").strip("/").casefold() == "mazagi_backup_manifest.json"), None)
+                has_backup_manifest = bool(manifest_info)
+                if manifest_info and manifest_info.file_size <= 2 * 1024 * 1024:
+                    manifest = json.loads(zf.read(manifest_info).decode("utf-8"))
+                    if isinstance(manifest, dict):
+                        imported_metadata = _sanitize_file_metadata_map(manifest.get("file_metadata", {}))
+            except Exception:
+                imported_metadata = {}
+            safe_extract_zip(zf, base, allow_backup_metadata=has_backup_manifest)
+        # Backup control files are metadata only, not runnable project files.
+        for internal_name in ("MAZAGI_BACKUP_MANIFEST.json", "MAZAGI_BACKUP_README_AR.txt"):
+            try: os.remove(os.path.join(base, internal_name))
+            except OSError: pass
+        imported_metadata = _sanitize_file_metadata_map(imported_metadata, base)
+        if imported_metadata:
+            srv.setdefault("file_metadata", {}).update(imported_metadata)
         # كشف تلقائي بعد فك الضغط + حفظ
         auto_detect_server_type(srv["path"], srv)
-        save_db(db)
+        if not save_db(db):
+            return jsonify({"success": False, "message": "تم فك الضغط لكن تعذر حفظ بيانات الأوصاف في قاعدة البيانات"}), 500
         return jsonify({"success": True, "message": f"✅ تم فك ضغط {filename}"})
     except zipfile.BadZipFile:
         return jsonify({"success": False, "message": "ملف ZIP غير صالح"})
@@ -2838,6 +3046,9 @@ def delete_files(folder):
                 shutil.rmtree(fpath)
             elif os.path.exists(fpath):
                 os.remove(fpath)
+            for meta_path in list((srv.get("file_metadata") or {}).keys()):
+                if meta_path == relative_name or meta_path.startswith(relative_name.rstrip("/") + "/"):
+                    srv["file_metadata"].pop(meta_path, None)
             deleted += 1
         except Exception:
             pass
@@ -2864,7 +3075,7 @@ def delete_all_files(folder):
                 else: os.remove(target)
                 deleted+=1
             except Exception: pass
-        srv.update(startup_file='',status='Stopped',pid=None,port=get_assigned_port()); save_db(db)
+        srv.update(startup_file='',status='Stopped',pid=None,port=get_assigned_port(),file_metadata={}); save_db(db)
         return jsonify({'success':True,'message':f'🗑 تم حذف كل الملفات والمجلدات ({deleted})'})
     except Exception as e: return jsonify({'success':False,'message':f'فشل حذف الكل: {e}'}),500
 
@@ -3087,6 +3298,106 @@ def admin_delete_file(folder):
         return jsonify({"success": True, "message": "🗑 تم حذف الملف من السيرفر"})
     except Exception as e:
         return jsonify({"success": False, "message": str(e)}), 500
+
+def _write_server_backup_archive(archive, srv):
+    """Write all project-owned files plus a manifest preserving their Arabic display descriptions."""
+    base = os.path.realpath(srv.get("path", ""))
+    for root, dirs, names in os.walk(base, followlinks=False):
+        dirs[:] = [d for d in dirs if d not in FILE_COUNT_EXCLUDED_DIRS and not os.path.islink(os.path.join(root, d))]
+        for name in names:
+            full_path = os.path.join(root, name)
+            if os.path.islink(full_path):
+                continue
+            rel = os.path.relpath(full_path, base).replace(os.sep, "/")
+            if is_reserved_project_path(rel) or is_reserved_temp_name(name):
+                continue
+            archive.write(full_path, arcname=rel)
+    manifest = {
+        "format": "mazagi-server-backup-v1",
+        "server_name": str(srv.get("name", ""))[:120],
+        "server_type": str(srv.get("type", "Python"))[:32],
+        "startup_file": str(srv.get("startup_file", ""))[:255],
+        "exported_at": datetime.now().isoformat(timespec="seconds"),
+        "file_metadata": _sanitize_file_metadata_map(srv.get("file_metadata", {}))
+    }
+    archive.writestr("MAZAGI_BACKUP_MANIFEST.json", json.dumps(manifest, ensure_ascii=False, indent=2))
+    archive.writestr("MAZAGI_BACKUP_README_AR.txt", "نسخة احتياطية لملفات هذا البوت/المشروع من مزاجي.\nتتضمن ملفات المشروع الموجودة داخل هذا السيرفر وبيانات الوصف العربي المحفوظة.\nإذا كانت قاعدة بيانات البوت داخل مجلد المشروع فستكون ضمن النسخة.\nهذه النسخة لا تتضمن قاعدة بيانات منصة مزاجي العامة أو حسابات مستخدمي الاستضافة.\nعند رفع ZIP عبر زر (رفع ملف وتشغيله تلقائياً) يمكن استيراد وصف الملفات تلقائياً.\nاحتفظ بهذه النسخة في مكان خاص إذا كانت ملفات المشروع تحتوي على أسرار.\n")
+
+
+@app.route('/api/server/export/<folder>')
+def export_user_server_backup(folder):
+    if "username" not in session:
+        return jsonify({"success": False, "message": "غير مصرح"}), 401
+    srv = db.get("servers", {}).get(folder)
+    if not srv or srv.get("owner") != session.get("username"):
+        return jsonify({"success": False, "message": "غير مصرح"}), 403
+    if not os.path.isdir(srv.get("path", "")):
+        return jsonify({"success": False, "message": "مجلد المشروع غير موجود"}), 404
+    temp_base = tempfile.mkdtemp(prefix="mazagi_server_backup_")
+    archive_path = os.path.join(temp_base, (safe_user_filename(srv.get("name", "server")) or "server") + ".zip")
+    try:
+        with zipfile.ZipFile(archive_path, "w", compression=zipfile.ZIP_DEFLATED, allowZip64=True) as archive:
+            _write_server_backup_archive(archive, srv)
+        response = send_file(archive_path, as_attachment=True, download_name=os.path.basename(archive_path))
+        response.call_on_close(lambda: shutil.rmtree(temp_base, ignore_errors=True))
+        return response
+    except Exception as exc:
+        shutil.rmtree(temp_base, ignore_errors=True)
+        return jsonify({"success": False, "message": f"تعذر إنشاء النسخة الاحتياطية: {exc}"}), 500
+
+
+@app.route('/api/admin/backup/full')
+def admin_download_full_backup():
+    """Export the whole persistent Mazaji data directory for a controlled migration."""
+    if not _check_admin_access():
+        return jsonify({"success": False, "message": "غير مصرح"}), 403
+    data_root = os.path.realpath(DATA_DIR)
+    if not os.path.isdir(data_root):
+        return jsonify({"success": False, "message": "مجلد البيانات غير موجود"}), 404
+    temp_base = tempfile.mkdtemp(prefix="mazagi_full_backup_")
+    archive_path = os.path.join(temp_base, "Mazaji_Full_Backup.zip")
+    count_files = 0
+    try:
+        with zipfile.ZipFile(archive_path, "w", compression=zipfile.ZIP_DEFLATED, allowZip64=True) as archive:
+            for root, dirs, names in os.walk(data_root, followlinks=False):
+                dirs[:] = [d for d in dirs if not os.path.islink(os.path.join(root, d)) and d not in {"__pycache__", ".pytest_cache", ".mypy_cache"}]
+                for name in names:
+                    full_path = os.path.join(root, name)
+                    if os.path.islink(full_path) or name == ".session_secret" or name.endswith(".tmp") or ".replace_tmp" in name:
+                        continue
+                    rel = os.path.relpath(full_path, data_root).replace(os.sep, "/")
+                    if rel == "":
+                        continue
+                    archive.write(full_path, arcname=rel)
+                    count_files += 1
+            readme = (
+                "نسخة احتياطية كاملة لبيانات منصة مزاجي\n"
+                "تتضمن db.json (حسابات المستخدمين وإعدادات الخطط وبيانات السيرفرات المحفوظة بالمنصة) ومجلدات USERS وphp_files وأي نسخ احتياطية محفوظة داخل DATA_DIR.\n"
+                "تشمل ملفات مشاريع/بوتات المستخدمين الموجودة داخل USERS. إذا كان ملف قاعدة بيانات البوت داخل مجلد مشروعه فسيكون ضمن النسخة.\n"
+                "لا تتضمن هذه الحزمة مفتاح الجلسة .session_secret؛ سيتم إنشاء مفتاح جديد عند التشغيل وقد تحتاج الحسابات إلى تسجيل الدخول مجددًا.\n"
+                "للترحيل: أوقف التطبيق الهدف وخذ نسخة من بياناته الحالية، ثم استخرج محتويات ZIP مباشرة إلى جذر DATA_DIR. على Railway اربط Volume على /data واستخرج المحتويات بحيث يصبح db.json في /data/db.json وUSERS في /data/USERS.\n"
+                "لا تستخرج فوق بيانات موجودة دون نسخة احتياطية منفصلة. هذه الحزمة حساسة وقد تحتوي على كلمات مرور مشفرة ومفاتيح API وملفات مشروع سرية؛ لا تشاركها.\n"
+            )
+            archive.writestr("MAZAGI_FULL_BACKUP_README_AR.txt", readme)
+            archive.writestr("MAZAGI_FULL_BACKUP_MANIFEST.json", json.dumps({
+                "format": "mazagi-full-backup-v1",
+                "created_at": datetime.now().isoformat(timespec="seconds"),
+                "source_data_dir": data_root,
+                "files_included": count_files,
+                "items": [
+                    {"path": "db.json", "display_name": "قاعدة بيانات منصة مزاجي", "description": "سجلات حسابات المستخدمين والخطط وبيانات السيرفرات التي تديرها المنصة."},
+                    {"path": "USERS/", "display_name": "ملفات المستخدمين والسيرفرات", "description": "مجلدات المشاريع والملفات التي رفعها مستخدمو مزاجي."},
+                    {"path": "php_files/", "display_name": "ملفات PHP", "description": "ملفات PHP المحفوظة من أدوات المنصة."},
+                    {"path": "backups/", "display_name": "النسخ الاحتياطية السابقة", "description": "نسخ قاعدة البيانات التي تحتفظ بها المنصة إن وُجدت."}
+                ]
+            }, ensure_ascii=False, indent=2))
+        response = send_file(archive_path, as_attachment=True, download_name="Mazaji_Full_Backup.zip")
+        response.call_on_close(lambda: shutil.rmtree(temp_base, ignore_errors=True))
+        return response
+    except Exception as exc:
+        shutil.rmtree(temp_base, ignore_errors=True)
+        return jsonify({"success": False, "message": f"تعذر إنشاء النسخة الاحتياطية: {exc}"}), 500
+
 
 @app.route('/api/admin/server/download-all/<folder>')
 def admin_download_server(folder):
