@@ -21,7 +21,7 @@ Railway يعيد إنشاء نظام ملفات الحاوية مع النشرا
 **تنبيه صريح:** ملف الكود لا يستطيع إنشاء/ربط Volume تلقائياً بحساب Railway الخاص بك دون صلاحية حساب أو token. بعد التحديث، تأكد مرة واحدة من وجود Volume في Service → Volumes وأن Mount Path هو `/data`. لا تستخدم خيار Wipe Volume. إذا لم يكتشف التطبيق Volume، تظهر رسالة تحذير للأدمن داخل لوحة الاستضافة.
 
 ## تشغيل Railway
-أمر التشغيل المضبوط: `gunicorn app:app --bind 0.0.0.0:$PORT --workers 1 --threads 4 --timeout 120`
+أمر التشغيل: `python app.py` (يقرأ التطبيق المنفذ PORT ويشغّل Flask مباشرة لتجنب خطأ `gunicorn: command not found`).
 Health check: `/healthz`
 
 للموقع الثابت، ارفع ملف `index.html` إلى جذر المشروع. إذا لم يوجد، يختار الخادم أول ملف HTML صالح تلقائياً.
