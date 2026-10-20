@@ -1,0 +1,53 @@
+{
+  "appName": "صدى العراق",
+  "version": "2.62",
+  "buildId": "SADA-1.6.88-SPEED-LAZY-SERVICE-LIST-20261020",
+  "currency": "USD",
+  "exchangeRate": 1250,
+  "fixedRecharge": "5000 IQD = 4 USD",
+  "rateTable": [
+    {
+      "iqd": 1000,
+      "usd": 0.8
+    },
+    {
+      "iqd": 2000,
+      "usd": 1.6
+    },
+    {
+      "iqd": 3000,
+      "usd": 2.4
+    },
+    {
+      "iqd": 4000,
+      "usd": 3.2
+    },
+    {
+      "iqd": 5000,
+      "usd": 4.0
+    },
+    {
+      "iqd": 6000,
+      "usd": 4.8
+    },
+    {
+      "iqd": 7000,
+      "usd": 5.6
+    },
+    {
+      "iqd": 8000,
+      "usd": 6.4
+    },
+    {
+      "iqd": 9000,
+      "usd": 7.2
+    },
+    {
+      "iqd": 10000,
+      "usd": 8.0
+    }
+  ],
+  "supportWhatsappUrl": "https://wa.me/9647762267959",
+  "supportWhatsappNumber": "9647762267959",
+  "telegramChannelUrl": "https://t.me/jbhbhg58"
+}

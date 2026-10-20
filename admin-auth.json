@@ -1,0 +1,6 @@
+{
+  "email": "hsydgyg5@gmail.com",
+  "passwordHash": "scrypt$8fdd5171660e5669b6e8f43b88612af1$e5e38e4a980c408fc5087aabb79c14f8266574bd6afb79a8b2abda4beea4e2a3577c90fdaec1c95165464fbecf738534bb98efa9ebc16887d6371a091a02413b",
+  "algorithm": "scrypt",
+  "note": "Hashed owner admin credential; plaintext is intentionally not stored."
+}
