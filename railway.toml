@@ -1,9 +1,9 @@
 [build]
-builder = "NIXPACKS"
+builder = "DOCKERFILE"
+dockerfilePath = "Dockerfile"
 
 [deploy]
-# Avoid a missing-gunicorn executable in the current deployment environment.
-# app.py binds to 0.0.0.0 and reads Railway's PORT itself.
+# Launch Flask directly; app.py reads the PORT value supplied by Railway.
 startCommand = "python app.py"
 healthcheckPath = "/healthz"
 healthcheckTimeout = 100

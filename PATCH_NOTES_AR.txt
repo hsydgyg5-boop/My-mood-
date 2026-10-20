@@ -8,7 +8,7 @@
 5) إزالة فرض نوع Node.js لمجرد رفع ملف JavaScript منفرد؛ يعاد تحديد النوع من مجموعة ملفات المشروع بعد الرفع.
 
 تشغيل لوحة مزاجي على Railway:
-- Procfile و railway.toml يحددان الأمر: gunicorn app:app --bind 0.0.0.0:$PORT --workers 1 --threads 4 --timeout 120
+- Railway يستخدم Dockerfile لتثبيت الاعتماديات الموجودة في requirements.txt، ثم يشغّل التطبيق بالأمر python app.py؛ وProcfile مضبوط على الأمر نفسه.
 - يتم تثبيت المكتبات من requirements.txt.
 - لدوام بيانات المستخدمين، أبقِ Railway Volume على /data ولا تستخدم Wipe Volume.
 

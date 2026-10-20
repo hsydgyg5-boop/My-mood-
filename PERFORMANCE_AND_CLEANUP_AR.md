@@ -1,6 +1,6 @@
 # مزاجي — إصلاح التشغيل والتنظيف والأداء
 
-- المشروع يعمل كتطبيق Flask/Python عبر `app.py`؛ أمر تشغيل Railway هو `gunicorn app:app --bind 0.0.0.0:$PORT --workers 1 --threads 4 --timeout 120`.
+- المشروع يعمل كتطبيق Flask/Python عبر `app.py`؛ أمر تشغيل Railway هو `python app.py`، ويثبّت Dockerfile الاعتماديات الموجودة في `requirements.txt`.
 - تمت إزالة إعدادات Node.js المنسوخة من مشروع آخر (`package.json` و`server.js` و`railway.json` وملفات أصول صدى العراق) التي كانت تتعارض مع تشغيل Python.
 - أُعيدت صفحة لوحة مزاجي الأصلية بدل صفحة صدى العراق الكبيرة، مما قلّل الحجم الأولي للـ HTML من نحو 2.06MB إلى نحو 90KB.
 - أزيلت أرشيفات ZIP الداخلية والنسخ القديمة من حزمة النشر؛ ملفات التطبيق الأساسية فقط موجودة.
@@ -10,6 +10,6 @@
 ## تحقق النشر
 
 1. ارفع محتويات الحزمة إلى مستودع مشروع مزاجي، وليس مشروع صدى العراق.
-2. تأكد أن `requirements.txt` موجود وأن أمر Start هو `gunicorn app:app --bind 0.0.0.0:$PORT --workers 1 --threads 4 --timeout 120`.
+2. تأكد أن `requirements.txt` و`Dockerfile` موجودان في جذر المشروع؛ أمر Start هو `python app.py`.
 3. تأكد من ربط Railway Volume بمسار `/data` للحفاظ على قاعدة البيانات وملفات المستخدمين بين النشرات.
 4. بعد النشر، افتح `/healthz` وتأكد من إرجاع `{"ok": true, "service": "mazagi-host"}`.
