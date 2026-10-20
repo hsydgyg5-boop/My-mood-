@@ -929,7 +929,6 @@
 <div class="container">
     <!-- الصفحة الرئيسية (قائمة السيرفرات) -->
     <div id="homeView">
-        <div id="persistenceWarning" role="alert" style="display:none;margin:0 0 18px;padding:14px 16px;border:1px solid rgba(255,185,60,.55);background:rgba(255,185,60,.10);color:#ffe0a1;border-radius:16px;line-height:1.6;font-size:.88rem;"></div>
         <div class="stats-grid">
             <div class="stat-card"><div class="stat-header"><span class="stat-title">السيرفرات المستخدمة</span><div class="stat-icon"><i class="fas fa-server"></i></div></div><div class="stat-value" id="usedServers">0/2</div></div>
             <div class="stat-card"><div class="stat-header"><span class="stat-title">الصلاحية المتبقية</span><div class="stat-icon"><i class="fas fa-calendar-alt"></i></div></div><div class="stat-value" id="expiryDays">-- يوم</div></div>
@@ -1071,8 +1070,24 @@
 
 <!-- مودال التقدم -->
 <div id="createProgressModal" class="modal"><div class="modal-content"><div id="createLoading"><div class="spinner"></div><p style="text-align:center;">⏳ جاري إنشاء الخادم...</p></div><div id="createSuccess" style="display:none; text-align:center;"><i class="fas fa-check-circle" style="font-size:3rem; color:#00ff88;"></i><p style="margin:16px 0;">تم إنشاء الخادم بنجاح!</p><button class="btn-success" onclick="closeCreateProgressModal(); loadServers();">الانتقال إلى السيرفرات</button></div></div></div>
+<div id="autoUploadNameModal" class="modal"><div class="modal-content" style="max-width:480px;">
+  <h3 style="color:#00e5ff;margin-bottom:10px;"><i class="fas fa-server"></i> اختر اسم السيرفر</h3>
+  <p style="color:#9ca3cf;font-size:.88rem;line-height:1.7;margin-bottom:14px;">اكتب الاسم الذي تريد ظهوره في قائمة السيرفرات قبل بدء الرفع والتشغيل.</p>
+  <div class="form-group"><label for="autoServerName">اسم السيرفر</label><input id="autoServerName" type="text" maxlength="60" placeholder="مثال: بوتي الجديد" style="width:100%;padding:12px 16px;background:rgba(0,0,0,.4);border:1px solid rgba(45,122,255,.4);border-radius:14px;color:white;font-family:'Tajawal',sans-serif;" onkeydown="if(event.key==='Enter') confirmAutoCreateServer()"></div>
+  <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:16px;"><button class="btn-success" style="flex:1;" onclick="confirmAutoCreateServer()"><i class="fas fa-cloud-arrow-up"></i> رفع وتشغيل</button><button class="btn-secondary" style="flex:1;" onclick="cancelAutoUploadName()">إلغاء</button></div>
+</div></div>
 
-<div id="editorModal" class="modal"><div class="modal-content"><textarea id="editorArea" rows="12" style="width:100%; background:#010409; border:1px solid #2d7aff; border-radius:16px; padding:12px; color:white; font-family:monospace;"></textarea><button class="glow-btn" style="width:100%; margin-top:16px;" onclick="saveFile()">حفظ</button></div></div>
+<div id="editorModal" class="modal"><div class="modal-content" style="max-width:900px;width:95%;padding:18px;">
+  <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-bottom:12px;">
+    <h3 style="margin:0;color:#00e5ff;font-size:1rem;"><i class="fas fa-file-pen"></i> محرر الملفات</h3>
+    <span id="editorFileName" style="color:#9ca3cf;direction:ltr;overflow-wrap:anywhere;"></span>
+  </div>
+  <textarea id="editorArea" rows="20" spellcheck="false" autocapitalize="off" autocomplete="off" style="width:100%;min-height:55vh;background:#010409;border:1px solid #2d7aff;border-radius:16px;padding:14px;color:#eaf2ff;font-family:ui-monospace,Consolas,monospace;font-size:14px;line-height:1.55;direction:ltr;text-align:left;resize:vertical;"></textarea>
+  <div style="display:flex;gap:10px;margin-top:14px;flex-wrap:wrap;">
+    <button class="glow-btn" style="flex:1;min-width:130px;" onclick="saveFile()"><i class="fas fa-save"></i> حفظ</button>
+    <button class="btn-secondary" style="flex:1;min-width:130px;" onclick="closeFileEditor()"><i class="fas fa-arrow-right"></i> رجوع</button>
+  </div>
+</div></div>
 
 <!-- Rename Modal -->
 <div id="renameModal" class="rename-modal">
@@ -1096,7 +1111,7 @@
 <div id="toast" class="toast"></div>
 
 <script>
-    let currentServer = null, polling = null, currentFile = null, confirmAction = null, selectedPlan = null;
+    let currentServer = null, polling = null, currentFile = null, editorOriginalContent = '', confirmAction = null, selectedPlan = null;
 
     const showToast = (msg, type='info') => { const t = document.getElementById('toast'); t.innerHTML = `<i class="fas ${type==='success'?'fa-check-circle':type==='error'?'fa-exclamation-circle':'fa-info-circle'}"></i> ${msg}`; t.style.display='block'; setTimeout(()=>t.style.display='none',3000); };
     const showConfirm = (msg, cb) => { document.getElementById('confirmMsg').innerText = msg; confirmAction = cb; document.getElementById('confirmModal').classList.add('active'); };
@@ -1248,24 +1263,54 @@
         }
     }
 
-    // ===== رفع ملف وإنشاء سيرفر تلقائياً =====
-    async function autoCreateServer(file) {
+    // ===== رفع ملف وإنشاء سيرفر باسم يختاره المستخدم =====
+    let pendingAutoUploadFile = null;
+    function autoCreateServer(file) {
         if (!file) return;
+        pendingAutoUploadFile = file;
+        const baseName = file.name.replace(/\.[^.]+$/, '').slice(0, 60);
+        document.getElementById('autoServerName').value = baseName || 'سيرفري الجديد';
+        document.getElementById('autoUploadNameModal').classList.add('active');
+        setTimeout(() => document.getElementById('autoServerName').focus(), 50);
+    }
+
+    function cancelAutoUploadName() {
+        document.getElementById('autoUploadNameModal').classList.remove('active');
+        pendingAutoUploadFile = null;
+        document.getElementById('autoServerUpload').value = '';
+    }
+
+    async function confirmAutoCreateServer() {
+        if (!pendingAutoUploadFile) return;
+        const serverName = document.getElementById('autoServerName').value.trim();
+        if (!serverName) {
+            showToast('اكتب اسمًا للسيرفر أولًا', 'error');
+            document.getElementById('autoServerName').focus();
+            return;
+        }
+        if (serverName.length > 60) {
+            showToast('اسم السيرفر يجب ألا يتجاوز 60 حرفًا', 'error');
+            return;
+        }
+        const file = pendingAutoUploadFile;
         const fd = new FormData();
         fd.append('file', file);
-        showToast('⏳ جاري إنشاء السيرفر ورفع الملف وتثبيت المكتبات...', 'info');
+        fd.append('server_name', serverName);
+        document.getElementById('autoUploadNameModal').classList.remove('active');
+        showToast('⏳ جاري رفع الملف وتجهيز المكتبات وتشغيل السيرفر...', 'info');
         try {
             const r = await fetch('/api/server/auto-upload', { method:'POST', body:fd });
             const d = await r.json();
             if (d.success) {
-                showToast(d.message || '✅ تم إنشاء السيرفر تلقائياً', 'success');
+                showToast(d.message || '✅ تم إنشاء السيرفر تلقائيًا', 'success');
                 await loadServers();
             } else {
                 showToast(d.message || 'فشل إنشاء السيرفر', 'error');
             }
         } catch (e) {
-            showToast('خطأ في الاتصال بالسيرفر', 'error');
+            showToast('تعذر الاتصال بالخادم؛ تحقق من سجل التشغيل', 'error');
         } finally {
+            pendingAutoUploadFile = null;
             document.getElementById('autoServerUpload').value = '';
         }
     }
@@ -1466,7 +1511,8 @@
             const r = await fetch(`/api/server/stats/${currentServer.folder}`);
             const d = await r.json();
             if(!d.success) return;
-            document.getElementById('consoleOut').innerHTML = (d.logs || 'لا توجد مخرجات').split('\n').map(l => `<div>${escapeHtml(l)}</div>`).join('');
+            const combinedLogs = (d.logs || 'لا توجد مخرجات') + (d.errors ? '\n\n========== أخطاء التشغيل (stderr) ==========\n' + d.errors : '');
+            document.getElementById('consoleOut').innerHTML = combinedLogs.split('\n').map(l => `<div>${escapeHtml(l)}</div>`).join('');
             document.getElementById('consoleOut').scrollTop = document.getElementById('consoleOut').scrollHeight;
             const ramLimit = currentServer.ram_limit || 256;
             document.getElementById('ramStat').innerText = `${d.mem || 0} MB / ${ramLimit} MB`;
@@ -1538,7 +1584,7 @@
                         <div class="file-info"><div class="file-name">${safe}</div><div class="file-meta">${f.is_dir ? 'مجلد' : f.size}</div></div>
                     </div>
                     <div class="file-actions">
-                        ${!f.is_dir ? `<button type="button" class="file-btn edit" data-file-action="edit"><i class="fas fa-pen"></i><span>تعديل</span></button>
+                        ${!f.is_dir ? `<button type="button" class="file-btn edit" data-file-action="edit"><i class="fas fa-folder-open"></i><span>فتح الملف</span></button>
                         <button type="button" class="file-btn replace" data-file-action="replace"><i class="fas fa-repeat"></i><span>تبديل الملف</span></button>
                         <button type="button" class="file-btn download" data-file-action="download"><i class="fas fa-download"></i><span>تنزيل</span></button>` : ''}
                         <button type="button" class="file-btn rename" data-file-action="rename"><i class="fas fa-i-cursor"></i><span>تغيير الاسم</span></button>
@@ -1592,9 +1638,13 @@
     async function editFile(name) {
         const d = await apiJson(`/api/files/content/${encodeURIComponent(currentServer.folder)}/${encodeURIComponent(name)}`);
         if (d.content === undefined) throw new Error('تعذر قراءة الملف');
+        if (d.content === '[ملف ثنائي]') throw new Error('هذا ملف ثنائي ولا يمكن تعديله كمحتوى نصي');
         currentFile = name;
-        document.getElementById('editorArea').value = d.content || '';
+        editorOriginalContent = d.content || '';
+        document.getElementById('editorArea').value = editorOriginalContent;
+        document.getElementById('editorFileName').textContent = name;
         document.getElementById('editorModal').classList.add('active');
+        setTimeout(() => document.getElementById('editorArea').focus(), 50);
     }
 
     async function saveFile() {
@@ -1604,11 +1654,18 @@
             await apiJson(`/api/files/save/${encodeURIComponent(currentServer.folder)}/${encodeURIComponent(currentFile)}`, {
                 method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({content})
             });
-            showToast('تم حفظ الملف بنجاح', 'success');
-            document.getElementById('editorModal').classList.remove('active');
-            currentFile = null;
+            editorOriginalContent = content;
+            showToast('✅ تم حفظ التغييرات داخل الملف الأصلي', 'success');
             await loadFiles();
         } catch (e) { showToast(e.message || 'فشل حفظ الملف', 'error'); }
+    }
+
+    function closeFileEditor() {
+        const area = document.getElementById('editorArea');
+        if (currentFile && area.value !== editorOriginalContent && !confirm('عندك تعديلات غير محفوظة. تريد الرجوع بدون حفظ؟')) return;
+        document.getElementById('editorModal').classList.remove('active');
+        currentFile = null;
+        editorOriginalContent = '';
     }
 
     function downloadFile(name) {
@@ -1815,25 +1872,9 @@
         return String(s).replace(/[&<>]/g, m=>m==='&'?'&amp;':m==='<'?'&lt;':'&gt;'); 
     }
 
-    async function checkPersistenceStatus() {
-        const banner = document.getElementById('persistenceWarning');
-        if (!banner) return;
-        try {
-            const response = await fetch('/api/persistence/status', {cache:'no-store'});
-            if (!response.ok) return; // غير الأدمن لا يرى تفاصيل التخزين.
-            const data = await response.json();
-            if (data && data.success && data.is_railway && !data.persistent) {
-                banner.style.display = 'block';
-                banner.textContent = '⚠️ تنبيه حفظ الملفات: لم نكتشف Railway Volume مربوطاً بالخدمة. ربط GitHub وحده لا يحفظ ملفات السيرفرات بعد التحديث. اربط Volume بمسار /data في خدمة Railway ثم أعد النشر؛ لا تضغط Wipe Volume.';
-            } else {
-                banner.style.display = 'none';
-            }
-        } catch (_) {}
-    }
 
     // ===== بدء التشغيل =====
     checkAuth();
-    checkPersistenceStatus();
 </script>
 </body>
 </html>

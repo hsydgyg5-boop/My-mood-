@@ -19,6 +19,7 @@ import ast
 import shlex
 import unicodedata
 from datetime import datetime, timedelta
+from pathlib import Path
 from flask import Flask, send_from_directory, send_file, request, jsonify, session, redirect, make_response, Response
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -56,17 +57,57 @@ os.makedirs(USERS_DIR, exist_ok=True)
 PHP_DIR = os.path.join(DATA_DIR, "php_files")
 os.makedirs(PHP_DIR, exist_ok=True)
 
+def _load_or_create_session_secret():
+    """Prefer a deployment secret; otherwise keep a private generated key in DATA_DIR."""
+    configured = (os.environ.get("MAZAGI_SECRET_KEY") or os.environ.get("SECRET_KEY") or "").strip()
+    if configured:
+        return configured
+    secret_path = os.path.join(DATA_DIR, ".session_secret")
+    try:
+        with open(secret_path, "r", encoding="utf-8") as handle:
+            existing = handle.read().strip()
+        if len(existing) >= 40:
+            return existing
+    except OSError:
+        pass
+    generated = secrets.token_urlsafe(48)
+    try:
+        # O_EXCL avoids two Gunicorn workers overwriting each other's first key.
+        fd = os.open(secret_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(generated)
+            handle.flush()
+            os.fsync(handle.fileno())
+        return generated
+    except FileExistsError:
+        try:
+            with open(secret_path, "r", encoding="utf-8") as handle:
+                existing = handle.read().strip()
+            if len(existing) >= 40:
+                return existing
+        except OSError:
+            pass
+    except OSError as exc:
+        print(f"⚠️ تعذر حفظ مفتاح الجلسة داخل مجلد البيانات: {exc}", flush=True)
+    # Last-resort key; if storage is not writable sessions will reset on process restart.
+    return generated
+
+
 # منع Flask من نشر ملفات جذر المشروع (/static/app.py أو config) تلقائياً.
 app = Flask(__name__, static_folder=None)
-app.secret_key = "MERO_HOST_STABLE_SECRET_2026_XK9"
+app.secret_key = _load_or_create_session_secret()
 app.config['PERMANENT_SESSION_LIFETIME'] = timedelta(days=30)
 app.config['MAX_CONTENT_LENGTH'] = 500 * 1024 * 1024
 app.config['SESSION_COOKIE_HTTPONLY'] = True
 app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
+app.config['SESSION_COOKIE_SECURE'] = bool(IS_RAILWAY_RUNTIME or os.environ.get('HTTPS', '').lower() == 'on')
 
 # ============== بيانات المسؤول ==============
 ADMIN_USERNAME = "zzmmkj"
-ADMIN_PASSWORD_RAW = "AASS1122@@"
+ADMIN_PASSWORD_OVERRIDE = bool(os.environ.get("MAZAGI_ADMIN_PASSWORD", "").strip())
+ADMIN_PASSWORD_RAW = os.environ.get("MAZAGI_ADMIN_PASSWORD", "AASS1122@@").strip()
+if not ADMIN_PASSWORD_OVERRIDE:
+    print("⚠️ أمان الإدارة: عيّن MAZAGI_ADMIN_PASSWORD في متغيرات الاستضافة لتغيير كلمة المرور الافتراضية.", flush=True)
 
 # ============== إعدادات البوت والإشعارات ==============
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "").strip()
@@ -141,6 +182,8 @@ def load_db():
                     "40gb": {"name": "💎 40 جيجا", "storage": 40960000, "ram": 4096, "cpu": 4, "max_servers": 20, "price": 25}
                 }
                 data.setdefault("users", {})
+                for existing_name, existing_user in data["users"].items():
+                    existing_user.setdefault("max_files", 1000000 if existing_user.get("is_admin") or existing_name == ADMIN_USERNAME else 10)
                 data.setdefault("servers", {})
                 data.setdefault("logs", [])
                 data.setdefault("plans", {})
@@ -156,6 +199,7 @@ def load_db():
                         "is_admin": True,
                         "created_at": str(datetime.now()),
                         "max_servers": 999999,
+                        "max_files": 1000000,
                         "expiry_days": 3650,
                         "last_login": None,
                         "telegram_id": None,
@@ -166,12 +210,44 @@ def load_db():
                     }
                     save_db(data)
                 else:
-                    # ضمان صلاحيات الأدمن بدون تغيير كلمة مرور الحساب الموجود.
+                    # ضمان الصلاحيات؛ إذا ضبط المسؤول كلمة مرور عبر متغير البيئة، حدّث hash الحساب بأمان.
                     data["users"][ADMIN_USERNAME]["is_admin"] = True
                     data["users"][ADMIN_USERNAME].setdefault("status", "approved")
+                    if ADMIN_PASSWORD_OVERRIDE:
+                        configured_hash = hashlib.sha256(ADMIN_PASSWORD_RAW.encode()).hexdigest()
+                        if data["users"][ADMIN_USERNAME].get("password") != configured_hash:
+                            data["users"][ADMIN_USERNAME]["password"] = configured_hash
+                            save_db(data)
                 return data
-        except Exception:
-            pass
+        except Exception as exc:
+            print(f"❌ تعذر قراءة قاعدة البيانات {DB_FILE}: {exc}", flush=True)
+            try:
+                if os.path.isfile(DB_FILE):
+                    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                    corrupt_copy = f"{DB_FILE}.corrupt-{stamp}.json"
+                    shutil.copy2(DB_FILE, corrupt_copy)
+                    print(f"⚠️ تم الاحتفاظ بنسخة من قاعدة البيانات غير المقروءة: {corrupt_copy}", flush=True)
+                # Before creating a fresh DB, try the most recent valid known-good backup.
+                backups_dir = os.path.join(DATA_DIR, "backups")
+                candidates = []
+                if os.path.isdir(backups_dir):
+                    candidates = sorted(
+                        (os.path.join(backups_dir, n) for n in os.listdir(backups_dir)
+                         if n.startswith("db_before_update_") and n.endswith(".json")),
+                        reverse=True
+                    )
+                for candidate in candidates:
+                    try:
+                        with open(candidate, "r", encoding="utf-8") as backup_file:
+                            backup_data = json.load(backup_file)
+                        if isinstance(backup_data, dict) and isinstance(backup_data.get("users"), dict) and isinstance(backup_data.get("servers"), dict):
+                            shutil.copy2(candidate, DB_FILE)
+                            print(f"✅ استُعيدت قاعدة البيانات من النسخة الاحتياطية: {candidate}", flush=True)
+                            return load_db()
+                    except Exception:
+                        continue
+            except Exception as backup_exc:
+                print(f"⚠️ تعذر حفظ/استعادة نسخة من قاعدة البيانات التالفة: {backup_exc}", flush=True)
     admin_hash = hashlib.sha256(ADMIN_PASSWORD_RAW.encode()).hexdigest()
     default_db = {
         "users": {
@@ -180,6 +256,7 @@ def load_db():
                 "is_admin": True,
                 "created_at": str(datetime.now()),
                 "max_servers": 999999,
+                "max_files": 1000000,
                 "expiry_days": 3650,
                 "last_login": None,
                 "telegram_id": None,
@@ -201,20 +278,40 @@ def load_db():
     save_db(default_db)
     return default_db
 
+_DB_SAVE_LOCK = threading.RLock()
+
 def save_db(db_data):
+    """Atomically persist the database and retry a few times if concurrent edits race serialization."""
+    tmp_file = None
     try:
         os.makedirs(os.path.dirname(DB_FILE), exist_ok=True)
-        tmp_file = DB_FILE + '.tmp'
-        with open(tmp_file, 'w', encoding='utf-8') as f:
-            json.dump(db_data, f, indent=4, ensure_ascii=False)
-            f.flush()
-            os.fsync(f.fileno())
-        os.replace(tmp_file, DB_FILE)
-        # لا ننسخ قاعدة البيانات الحية إلى مجلد الكود؛ مصدر الحقيقة الوحيد هو DATA_DIR/db.json.
-        # هذا يمنع إدخال بيانات المستخدمين والأرصدة ضمن حزمة الكود التي يعاد نشرها.
+        with _DB_SAVE_LOCK:
+            serialized = None
+            last_serialization_error = None
+            for attempt in range(3):
+                try:
+                    serialized = json.dumps(db_data, indent=4, ensure_ascii=False)
+                    break
+                except RuntimeError as exc:
+                    last_serialization_error = exc
+                    time.sleep(0.02 * (attempt + 1))
+            if serialized is None:
+                raise RuntimeError(f"تغيّرت بيانات قاعدة البيانات أثناء الحفظ: {last_serialization_error}")
+            tmp_file = f"{DB_FILE}.{os.getpid()}.{threading.get_ident()}.{secrets.token_hex(4)}.tmp"
+            with open(tmp_file, 'w', encoding='utf-8') as f:
+                f.write(serialized)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp_file, DB_FILE)
         return True
     except Exception as e:
-        print(f"❌ خطأ في حفظ DB: {e}")
+        print(f"❌ خطأ في حفظ DB: {e}", flush=True)
+        if tmp_file:
+            try:
+                if os.path.exists(tmp_file):
+                    os.remove(tmp_file)
+            except OSError:
+                pass
         return False
 
 def safe_user_filename(filename):
@@ -237,6 +334,24 @@ def safe_child_path(base, name):
     if os.path.commonpath([base_abs, path_abs]) != base_abs:
         return None
     return path_abs
+
+def has_symlink_component(base, name):
+    """Detect symlinks in the user-supplied relative path before resolving it."""
+    if not name:
+        return True
+    raw = unicodedata.normalize('NFC', str(name)).replace('\\', '/')
+    parts = [part for part in raw.split('/') if part not in ('', '.')]
+    if not parts or any(part == '..' for part in parts) or raw.startswith('/'):
+        return True
+    current = os.path.abspath(base)
+    if os.path.islink(current):
+        return True
+    for part in parts:
+        current = os.path.join(current, part)
+        if os.path.islink(current):
+            return True
+    return False
+
 
 def safe_relative_path(base, name):
     """مسار آمن يسمح بمجلدات فرعية مثل ملفات ZIP المفكوكة، بدون path traversal."""
@@ -262,6 +377,17 @@ def safe_relative_path(base, name):
         return None
     return path_abs
 
+def is_safe_username_component(username):
+    """Usernames may be Unicode, but must never be filesystem paths."""
+    if not isinstance(username, str) or not username or len(username) > 64:
+        return False
+    if username in {".", ".."} or "/" in username or "\\" in username or ":" in username:
+        return False
+    if any(ord(ch) < 32 or ord(ch) == 127 for ch in username):
+        return False
+    return os.path.basename(username) == username
+
+
 db = load_db()
 
 def _backup_current_db_once():
@@ -279,11 +405,21 @@ def _backup_current_db_once():
         print(f"⚠️ تعذر إنشاء نسخة DB احتياطية: {exc}")
 
 def _safe_server_dir(owner, folder):
-    owner = safe_user_filename(owner)
-    folder = safe_user_filename(folder)
-    if not owner or not folder:
+    if not is_safe_username_component(owner) or not is_safe_username_component(folder):
         return None
-    return os.path.join(USERS_DIR, owner, "SERVERS", folder)
+    base = os.path.realpath(USERS_DIR)
+    owner_dir = os.path.abspath(os.path.join(base, owner))
+    servers_dir = os.path.abspath(os.path.join(owner_dir, "SERVERS"))
+    candidate = os.path.abspath(os.path.join(servers_dir, folder))
+    try:
+        if (os.path.realpath(owner_dir) != owner_dir
+                or os.path.realpath(servers_dir) != servers_dir
+                or os.path.realpath(candidate) != candidate
+                or os.path.commonpath([servers_dir, candidate]) != servers_dir):
+            return None
+    except ValueError:
+        return None
+    return candidate
 
 def _copy_tree_if_needed(src, dst):
     """استعادة غير مدمرة: انسخ الملفات الناقصة فقط، ولا تستبدل أي ملف موجود على الـ Volume."""
@@ -716,60 +852,51 @@ def detect_python_packages(srv_path):
     return list(dict.fromkeys(packages))
 
 
-def ensure_python_environment(srv_path, log_file=None):
-    """ينشئ .venv داخل السيرفر ويثبت المكتبات تلقائياً.
-    إذا كان المستخدم رفع requirements.txt نستخدمه كما هو؛ وإلا ننشئه تلقائياً من imports.
-    """
+def ensure_python_environment(srv_path, log_file=None, strict=True):
+    """Create a private venv, infer missing imports, install requirements, and verify imports."""
+    def log(message):
+        if log_file:
+            log_file.write(message + "\n")
+            log_file.flush()
+
+    venv_dir = os.path.join(srv_path, ".venv")
+    venv_python = os.path.join(venv_dir, "Scripts", "python.exe") if os.name == "nt" else os.path.join(venv_dir, "bin", "python")
+    venv_created_or_missing = not os.path.exists(venv_python)
     try:
-        venv_dir = os.path.join(srv_path, ".venv")
-        venv_python = os.path.join(venv_dir, "Scripts", "python.exe") if os.name == "nt" else os.path.join(venv_dir, "bin", "python")
-        venv_created_or_missing = not os.path.exists(venv_python)
-
         if venv_created_or_missing:
-            if log_file:
-                log_file.write("\n🧰 إنشاء بيئة Python خاصة بالسيرفر...\n")
-                log_file.flush()
-            subprocess.run([sys.executable, "-m", "venv", venv_dir], cwd=srv_path, stdout=log_file or subprocess.DEVNULL, stderr=subprocess.STDOUT, timeout=120, check=False)
-
-        if not os.path.exists(venv_python):
-            # fallback إذا venv غير متاح في بيئة الاستضافة.
-            venv_python = sys.executable
+            log("\n🧰 إنشاء بيئة Python خاصة بالمشروع...")
+            result = subprocess.run([sys.executable, "-m", "venv", venv_dir], cwd=srv_path,
+                                    stdout=log_file or subprocess.DEVNULL, stderr=subprocess.STDOUT,
+                                    timeout=120, check=False)
+            if result.returncode != 0 or not os.path.exists(venv_python):
+                raise RuntimeError("تعذر إنشاء البيئة الافتراضية. تحقق من أن الاستضافة تتضمن دعم venv وصلاحية الكتابة.")
 
         req_file = os.path.join(srv_path, "requirements.txt")
-        # استنتج المكتبات من الاستيرادات، ثم أضف الناقص فقط. لا نحذف إصدارات المستخدم المثبتة.
         inferred = detect_python_packages(srv_path)
         python_sources = []
         for root, dirs, files in os.walk(srv_path):
-            dirs[:] = [d for d in dirs if d not in {".venv", "venv", "__pycache__", ".git", "node_modules"}]
+            dirs[:] = [d for d in dirs if d not in FILE_COUNT_EXCLUDED_DIRS]
             for name in files:
                 if name.endswith(".py"):
                     try:
-                        python_sources.append(open(os.path.join(root, name), "r", encoding="utf-8", errors="ignore").read().lower())
+                        python_sources.append(Path(os.path.join(root, name)).read_text(encoding="utf-8", errors="ignore").lower())
                     except Exception:
                         pass
         all_python_text = "\n".join(python_sources)
         if "fastapi" in all_python_text and "uvicorn" not in inferred:
             inferred.append("uvicorn")
-        if "django.core.management" in all_python_text and not any(x.lower().replace('_','-') in ('django','django>=') for x in inferred):
+        if "django.core.management" in all_python_text and not any(x.lower().replace("_", "-").replace(".", "-").startswith("django") for x in inferred):
             inferred.append("Django")
 
         if not os.path.exists(req_file):
-            with open(req_file, "w", encoding="utf-8") as rf:
-                rf.write("\n".join(inferred) + ("\n" if inferred else ""))
-            if log_file:
-                log_file.write(f"📦 تم إنشاء requirements.txt تلقائياً ({len(inferred)} مكتبة مستنتجة)\n")
-                if inferred:
-                    log_file.write("   " + ", ".join(inferred) + "\n")
-                log_file.flush()
+            Path(req_file).write_text("\n".join(inferred) + ("\n" if inferred else ""), encoding="utf-8")
+            log(f"📦 تم إنشاء requirements.txt تلقائيًا ({len(inferred)} مكتبة مستنتجة)")
         else:
-            try:
-                original_lines = open(req_file, "r", encoding="utf-8", errors="ignore").read().splitlines()
-            except Exception:
-                original_lines = []
+            original_lines = Path(req_file).read_text(encoding="utf-8", errors="ignore").splitlines()
             present = set()
             for line in original_lines:
                 item = line.split("#", 1)[0].strip()
-                if not item or item.startswith("-"):
+                if not item or item.startswith(("-", "git+", "http://", "https://")):
                     continue
                 match = re.match(r"([A-Za-z0-9_.-]+)", item)
                 if match:
@@ -785,71 +912,160 @@ def ensure_python_environment(srv_path, log_file=None):
                     if original_lines and original_lines[-1].strip():
                         rf.write("\n")
                     rf.write("\n".join(added) + "\n")
-                if log_file:
-                    log_file.write("🧩 أُضيفت مكتبات ناقصة من imports إلى requirements.txt: " + ", ".join(added) + "\n")
-                    log_file.flush()
+                log("🧩 أُضيفت مكتبات مكتشفة من imports: " + ", ".join(added))
 
-        try:
-            requirement_text = open(req_file, "r", encoding="utf-8", errors="ignore").read()
-            has_requirements = bool(requirement_text.strip())
-            req_hash = hashlib.sha256(requirement_text.encode("utf-8")).hexdigest()
-        except Exception:
-            has_requirements = False
-            req_hash = ""
+        requirement_text = Path(req_file).read_text(encoding="utf-8", errors="ignore")
+        has_requirements = bool(requirement_text.strip())
+        req_hash = hashlib.sha256(requirement_text.encode("utf-8")).hexdigest()
         stamp_path = os.path.join(srv_path, ".mazagi_dependencies_hash")
         try:
-            installed_hash = open(stamp_path, "r", encoding="utf-8").read().strip()
+            installed_hash = Path(stamp_path).read_text(encoding="utf-8").strip()
         except Exception:
             installed_hash = ""
-        if has_requirements and (installed_hash != req_hash or venv_created_or_missing):
-            if log_file:
-                log_file.write("📦 تثبيت مكتبات Python تلقائياً...\n")
-                log_file.flush()
-            cmd = [venv_python, "-m", "pip", "install", "--disable-pip-version-check", "-r", req_file]
-            proc = subprocess.run(cmd, cwd=srv_path, stdout=log_file or subprocess.DEVNULL, stderr=subprocess.STDOUT, timeout=300, check=False)
-            if proc.returncode == 0 and req_hash:
-                try:
-                    with open(stamp_path, "w", encoding="utf-8") as sf:
-                        sf.write(req_hash)
-                except Exception:
-                    pass
-            if log_file:
-                log_file.write("✅ اكتمل تثبيت المكتبات\n" if proc.returncode == 0 else "❌ فشل تثبيت مكتبة أو أكثر؛ راجع out.log/errors.log\n")
-                log_file.flush()
-        elif has_requirements and log_file:
-            log_file.write("✅ المكتبات مثبتة مسبقاً لنفس requirements.txt؛ تم تجاوز التثبيت المتكرر.\n")
-            log_file.flush()
+
+        if has_requirements:
+            if installed_hash != req_hash or venv_created_or_missing:
+                log("📦 تثبيت المكتبات المطلوبة داخل بيئة المشروع...")
+            else:
+                log("🔎 إعادة التحقق من مكتبات requirements.txt وإصلاح أي حزمة مفقودة...")
+            cmd = [venv_python, "-m", "pip", "install", "--disable-pip-version-check", "--no-input", "-r", req_file]
+            result = subprocess.run(cmd, cwd=srv_path, stdout=log_file or subprocess.DEVNULL,
+                                    stderr=subprocess.STDOUT, timeout=600, check=False)
+            if result.returncode != 0:
+                log("⚠️ فشل التثبيت الأول؛ محاولة تحديث أدوات pip وإعادة المحاولة مرة واحدة...")
+                upgrade = subprocess.run([venv_python, "-m", "pip", "install", "--upgrade", "pip", "setuptools", "wheel", "--disable-pip-version-check"],
+                                         cwd=srv_path, stdout=log_file or subprocess.DEVNULL,
+                                         stderr=subprocess.STDOUT, timeout=180, check=False)
+                if upgrade.returncode == 0:
+                    result = subprocess.run(cmd, cwd=srv_path, stdout=log_file or subprocess.DEVNULL,
+                                            stderr=subprocess.STDOUT, timeout=600, check=False)
+            if result.returncode != 0:
+                log("❌ فشل تثبيت المكتبات. افحص اسم الحزمة وإصدار Python والاتصال بالإنترنت ورسائل pip أعلاه.")
+                raise RuntimeError("فشل تثبيت مكتبات Python؛ راجع سجل التثبيت لمعرفة الحزمة والسبب المحدد.")
+            Path(stamp_path).write_text(req_hash, encoding="utf-8")
+            log("✅ تم تثبيت المكتبات بنجاح")
+        else:
+            log("ℹ️ لم تُكتشف مكتبات خارجية مطلوبة لهذا المشروع")
+
+        # Confirm pip/venv is usable. Import failures from the app itself remain visible at startup.
+        check = subprocess.run([venv_python, "-m", "pip", "--version"], cwd=srv_path,
+                               stdout=log_file or subprocess.DEVNULL, stderr=subprocess.STDOUT, timeout=30, check=False)
+        if check.returncode != 0:
+            raise RuntimeError("بيئة Python أُنشئت لكن pip لا يعمل داخلها")
+        if has_requirements:
+            consistency = subprocess.run([venv_python, "-m", "pip", "check"], cwd=srv_path,
+                                         stdout=log_file or subprocess.DEVNULL, stderr=subprocess.STDOUT,
+                                         timeout=60, check=False)
+            if consistency.returncode != 0:
+                log("❌ فحص توافق المكتبات وجد تعارضًا أو اعتمادًا مفقودًا. راجع مخرجات pip check أعلاه.")
+                raise RuntimeError("المكتبات مثبتة لكن فحص التوافق فشل؛ راجع سجل التشغيل للتفاصيل")
+            log("✅ اجتاز فحص توافق المكتبات pip check")
         return venv_python
-    except Exception as e:
-        if log_file:
-            log_file.write(f"\n⚠️ التثبيت التلقائي: {e}\n")
-            log_file.flush()
+    except Exception as exc:
+        log(f"\n❌ تشخيص بيئة Python: {exc}")
+        if strict:
+            raise
         return sys.executable
 
 
 def auto_install_deps(srv_path: str, server_type: str, log_file):
+    """Install dependencies and raise on failure so the process is not started half-configured."""
     try:
         if server_type == "Node.js":
             pkg = os.path.join(srv_path, "package.json")
             if os.path.exists(pkg):
-                log_file.write("\n📦 تثبيت node_modules تلقائياً...\n")
-                log_file.flush()
-                proc = subprocess.Popen(["npm", "install"], cwd=srv_path, stdout=log_file, stderr=subprocess.STDOUT, env=os.environ.copy())
-                proc.wait(timeout=300)
-                log_file.write("✅ تم تثبيت node_modules\n" if proc.returncode == 0 else "⚠️ فشل npm install\n")
+                if not shutil.which("npm"):
+                    raise RuntimeError("الأمر npm غير متوفر في صورة الاستضافة")
+                log_file.write("\n📦 تثبيت حزم Node.js عبر npm install...\n"); log_file.flush()
+                proc = subprocess.run(["npm", "install", "--no-audit", "--no-fund"], cwd=srv_path,
+                                      stdout=log_file, stderr=subprocess.STDOUT, env=os.environ.copy(),
+                                      timeout=600, check=False)
+                if proc.returncode != 0:
+                    raise RuntimeError("فشل npm install؛ راجع السجل لمعرفة الحزمة أو الخطأ")
+                log_file.write("✅ اكتمل تثبيت حزم Node.js\n")
         elif server_type == "Python":
-            ensure_python_environment(srv_path, log_file)
+            ensure_python_environment(srv_path, log_file, strict=True)
         elif server_type == "PHP":
             composer_json = os.path.join(srv_path, "composer.json")
             if os.path.exists(composer_json):
-                log_file.write("\n📦 تثبيت PHP dependencies تلقائياً...\n")
-                log_file.flush()
-                proc = subprocess.Popen(["composer", "install", "--no-dev", "--prefer-dist"], cwd=srv_path, stdout=log_file, stderr=subprocess.STDOUT, env=os.environ.copy())
-                proc.wait(timeout=300)
-                log_file.write("✅ تم تثبيت PHP dependencies\n" if proc.returncode == 0 else "⚠️ فشل composer install\n")
-    except Exception as e:
-        log_file.write(f"\n⚠️ تثبيت تلقائي: {e}\n")
-    log_file.flush()
+                if not shutil.which("composer"):
+                    raise RuntimeError("composer.json موجود لكن Composer غير مثبت على الاستضافة")
+                log_file.write("\n📦 تثبيت مكتبات PHP عبر Composer...\n"); log_file.flush()
+                proc = subprocess.run(["composer", "install", "--no-dev", "--prefer-dist", "--no-interaction"], cwd=srv_path,
+                                      stdout=log_file, stderr=subprocess.STDOUT, env=os.environ.copy(),
+                                      timeout=600, check=False)
+                if proc.returncode != 0:
+                    raise RuntimeError("فشل Composer install؛ راجع السجل")
+                log_file.write("✅ اكتمل تثبيت مكتبات PHP\n")
+        elif server_type == "Ruby":
+            gemfile = os.path.join(srv_path, "Gemfile")
+            if os.path.exists(gemfile):
+                if not shutil.which("bundle"):
+                    raise RuntimeError("Gemfile موجود لكن Bundler غير متوفر في الاستضافة")
+                log_file.write("\n📦 تثبيت حزم Ruby عبر bundle install...\n"); log_file.flush()
+                proc = subprocess.run(["bundle", "install"], cwd=srv_path, stdout=log_file, stderr=subprocess.STDOUT,
+                                      env=os.environ.copy(), timeout=600, check=False)
+                if proc.returncode != 0:
+                    raise RuntimeError("فشل bundle install؛ راجع السجل")
+                log_file.write("✅ اكتمل تثبيت حزم Ruby\n")
+        elif server_type == "Java":
+            if os.path.exists(os.path.join(srv_path, "pom.xml")):
+                if os.path.isfile(os.path.join(srv_path, "mvnw")):
+                    cmd = ["sh", "mvnw", "-B", "-DskipTests", "dependency:resolve"]
+                elif shutil.which("mvn"):
+                    cmd = ["mvn", "-B", "-DskipTests", "dependency:resolve"]
+                else:
+                    raise RuntimeError("pom.xml موجود لكن Maven غير متوفر ولا يوجد mvnw")
+                log_file.write("\n📦 تنزيل اعتماديات Java عبر Maven...\n"); log_file.flush()
+                proc = subprocess.run(cmd, cwd=srv_path, stdout=log_file, stderr=subprocess.STDOUT, env=os.environ.copy(), timeout=600, check=False)
+                if proc.returncode != 0:
+                    raise RuntimeError("فشل حل اعتماديات Maven؛ راجع السجل")
+            elif os.path.exists(os.path.join(srv_path, "build.gradle")) or os.path.exists(os.path.join(srv_path, "build.gradle.kts")):
+                if os.path.isfile(os.path.join(srv_path, "gradlew")):
+                    cmd = ["sh", "gradlew", "--no-daemon", "dependencies"]
+                elif shutil.which("gradle"):
+                    cmd = ["gradle", "--no-daemon", "dependencies"]
+                else:
+                    raise RuntimeError("ملف Gradle موجود لكن Gradle غير متوفر ولا يوجد gradlew")
+                log_file.write("\n📦 تنزيل اعتماديات Java عبر Gradle...\n"); log_file.flush()
+                proc = subprocess.run(cmd, cwd=srv_path, stdout=log_file, stderr=subprocess.STDOUT, env=os.environ.copy(), timeout=600, check=False)
+                if proc.returncode != 0:
+                    raise RuntimeError("فشل حل اعتماديات Gradle؛ راجع السجل")
+        elif server_type == "Go":
+            if os.path.exists(os.path.join(srv_path, "go.mod")):
+                if not shutil.which("go"):
+                    raise RuntimeError("go.mod موجود لكن Go غير مثبت في الاستضافة")
+                log_file.write("\n📦 تنزيل وحدات Go عبر go mod download...\n"); log_file.flush()
+                proc = subprocess.run(["go", "mod", "download"], cwd=srv_path, stdout=log_file, stderr=subprocess.STDOUT,
+                                      env=os.environ.copy(), timeout=600, check=False)
+                if proc.returncode != 0:
+                    raise RuntimeError("فشل go mod download؛ راجع السجل")
+        elif server_type == "Rust":
+            if os.path.exists(os.path.join(srv_path, "Cargo.toml")):
+                if not shutil.which("cargo"):
+                    raise RuntimeError("Cargo.toml موجود لكن Rust/Cargo غير مثبت في الاستضافة")
+                log_file.write("\n📦 تنزيل وبناء اعتماديات Rust...\n"); log_file.flush()
+                proc = subprocess.run(["cargo", "build", "--release"], cwd=srv_path, stdout=log_file, stderr=subprocess.STDOUT,
+                                      env=os.environ.copy(), timeout=900, check=False)
+                if proc.returncode != 0:
+                    raise RuntimeError("فشل بناء اعتماديات Rust؛ راجع السجل")
+        log_file.flush()
+        return True
+    except subprocess.TimeoutExpired as exc:
+        log_file.write(f"\n❌ انتهت مهلة تثبيت المكتبات: {exc}\n"); log_file.flush()
+        raise RuntimeError("استغرق تثبيت المكتبات وقتًا أطول من الحد المسموح") from exc
+    except Exception as exc:
+        log_file.write(f"\n❌ تعذر تجهيز اعتماديات المشروع: {exc}\n")
+        # Add a short diagnostic hint without pretending to know more than the log says.
+        msg = str(exc).lower()
+        if any(x in msg for x in ("network", "connection", "timed out", "name or service not known", "ssl")):
+            log_file.write("🔎 السبب المحتمل حسب الرسالة: مشكلة اتصال أو SSL مع مستودع الحزم.\n")
+        elif any(x in msg for x in ("no matching distribution", "requires-python", "unsupported python")):
+            log_file.write("🔎 السبب المحتمل حسب الرسالة: إصدار Python غير متوافق أو لا توجد نسخة حزمة مناسبة.\n")
+        elif any(x in msg for x in ("gcc", "compiler", "rust", "build wheel")):
+            log_file.write("🔎 السبب المحتمل حسب الرسالة: الحزمة تحتاج أدوات بناء غير متاحة في الاستضافة.\n")
+        log_file.flush()
+        raise
 
 def detect_python_web_app(srv_path: str, main_file: str):
     """Identify common Python web apps whose module exports app but has no app.run() call."""
@@ -922,6 +1138,9 @@ def start_server_process(folder):
     srv=db['servers'].get(folder)
     if not srv: return False,'السيرفر غير موجود'
     srv_path=srv.get('path','')
+    expected_path = _safe_server_dir(srv.get('owner', ''), folder)
+    if not expected_path or os.path.abspath(srv_path) != expected_path or os.path.realpath(srv_path) != expected_path:
+        return False, 'تم منع التشغيل لأن مسار السيرفر غير آمن أو لا يطابق مجلد المستخدم'
     if not os.path.isdir(srv_path): return False,'مجلد المشروع غير موجود'
     detected=detect_project_type(srv_path)
     current_type=srv.get('type')
@@ -974,7 +1193,7 @@ def start_server_process(folder):
         elif server_type=='Rust': cmd=['cargo','run','--release']
         else:
             with open(log_path,'a',encoding='utf-8') as dep_log:
-                python_bin=ensure_python_environment(srv_path,dep_log)
+                python_bin=ensure_python_environment(srv_path, dep_log, strict=True)
             # Let submodules resolve from the uploaded project root.
             old_pythonpath = env.get("PYTHONPATH", "")
             env["PYTHONPATH"] = srv_path + (os.pathsep + old_pythonpath if old_pythonpath else "")
@@ -1056,7 +1275,7 @@ def stop_server_process(folder):
 def restart_server(folder):
     stop_server_process(folder)
     time.sleep(2)
-    start_server_process(folder)
+    return start_server_process(folder)
 
 # ============== مراقبة العمليات ==============
 def process_monitor():
@@ -1084,10 +1303,113 @@ def get_current_user():
         return db["users"].get(session["username"])
     return None
 
-def get_user_servers_dir(username):
-    path = os.path.join(USERS_DIR, username, "SERVERS")
-    os.makedirs(path, exist_ok=True)
+def get_user_directory(username):
+    if not is_safe_username_component(username):
+        raise ValueError("اسم المستخدم يحتوي أحرفًا غير مسموحة لمسار الملفات")
+    base = os.path.realpath(USERS_DIR)
+    expected = os.path.abspath(os.path.join(base, username))
+    path = os.path.realpath(expected)
+    if path != expected or os.path.commonpath([base, path]) != base:
+        raise ValueError("مسار المستخدم غير آمن أو يشير إلى مجلد رمزي")
     return path
+
+
+def get_user_servers_dir(username):
+    user_dir = get_user_directory(username)
+    expected = os.path.abspath(os.path.join(user_dir, "SERVERS"))
+    os.makedirs(expected, exist_ok=True)
+    # Reject symlinks so a user directory cannot silently point into another user's storage.
+    real_path = os.path.realpath(expected)
+    if real_path != expected:
+        raise ValueError("مسار سيرفرات المستخدم غير آمن")
+    return real_path
+
+
+FILE_COUNT_EXCLUDED_DIRS = {".venv", "venv", "node_modules", "__pycache__", ".git", ".pytest_cache", ".mypy_cache"}
+# These files are owned by the hosting app, not by the uploaded project. Keep their
+# special treatment limited to the project root so nested user files still count.
+FILE_COUNT_EXCLUDED_NAMES = {"out.log", "errors.log", "server.log", "meta.json", ".mazagi_dependencies_hash"}
+RESERVED_ROOT_FILES = {name.casefold() for name in FILE_COUNT_EXCLUDED_NAMES}
+RESERVED_TEMP_PREFIXES = (".mazagi-save-", ".mazagi-replace-")
+
+
+def is_reserved_root_file(name):
+    return os.path.basename(str(name or "")).casefold() in RESERVED_ROOT_FILES
+
+
+def is_reserved_temp_name(name):
+    base = os.path.basename(str(name or "")).casefold()
+    return base.endswith(".replace_tmp") or any(base.startswith(prefix) for prefix in RESERVED_TEMP_PREFIXES)
+
+
+def is_reserved_project_path(relative_name):
+    """True for app-owned root files or temporary names that users must not overwrite."""
+    normalized = str(relative_name or "").replace("\\", "/").strip("/")
+    parts = [part for part in normalized.split("/") if part]
+    if not parts:
+        return True
+    if is_reserved_temp_name(parts[-1]):
+        return True
+    return len(parts) == 1 and is_reserved_root_file(parts[0])
+
+
+def user_max_files(user_or_username):
+    """Maximum number of user project files. New/legacy users default to 10."""
+    user = db.get("users", {}).get(user_or_username, {}) if isinstance(user_or_username, str) else (user_or_username or {})
+    try:
+        return max(1, min(int(user.get("max_files", 10)), 1000000))
+    except (TypeError, ValueError):
+        return 10
+
+
+def count_user_files(username):
+    """Count stored project files for this user, excluding generated dependency/cache folders and logs."""
+    total = 0
+    for srv in db.get("servers", {}).values():
+        if srv.get("owner") != username:
+            continue
+        base = srv.get("path") or ""
+        if not os.path.isdir(base):
+            continue
+        for root, dirs, names in os.walk(base, followlinks=False):
+            dirs[:] = [d for d in dirs if d not in FILE_COUNT_EXCLUDED_DIRS and not os.path.islink(os.path.join(root, d))]
+            rel_root = os.path.relpath(root, base)
+            at_root = rel_root == "."
+            for name in names:
+                if is_reserved_temp_name(name):
+                    continue
+                if at_root and is_reserved_root_file(name):
+                    continue
+                full_path = os.path.join(root, name)
+                if os.path.islink(full_path):
+                    continue
+                total += 1
+    return total
+
+
+def file_quota_message(username, adding=1):
+    user = db.get("users", {}).get(username, {})
+    limit = user_max_files(user)
+    used = count_user_files(username)
+    if adding > 0 and used + adding > limit:
+        return f"وصلت للحد الأقصى للملفات ({used}/{limit}). راجع الإدارة لزيادة الحد."
+    return None
+
+
+def count_zip_files(zip_obj):
+    """Count regular archive entries, ignoring directory entries and generated dependency/cache files."""
+    count = 0
+    for info in zip_obj.infolist():
+        name = info.filename.replace("\\", "/")
+        parts = [x for x in name.split("/") if x]
+        if info.is_dir() or not parts or any(part in FILE_COUNT_EXCLUDED_DIRS for part in parts):
+            continue
+        if is_reserved_temp_name(parts[-1]):
+            continue
+        if len(parts) == 1 and is_reserved_root_file(parts[0]):
+            continue
+        count += 1
+    return count
 
 def is_admin(username):
     if username == ADMIN_USERNAME:
@@ -1188,8 +1510,10 @@ def admin_panel():
 # ============== API المصادقة ==============
 @app.route('/api/register', methods=['POST'])
 def api_register():
-    data = request.get_json()
-    username = data.get("username", "").strip()
+    data = request.get_json(silent=True) or {}
+    if not isinstance(data, dict):
+        return jsonify({"success": False, "message": "بيانات الطلب غير صالحة"}), 400
+    username = str(data.get("username", "")).strip()
     password = data.get("password", "").strip()
     telegram_id = data.get("telegram_id", "").strip()
 
@@ -1197,6 +1521,8 @@ def api_register():
         return jsonify({"success": False, "message": "جميع الحقول مطلوبة"})
     if len(username) < 3:
         return jsonify({"success": False, "message": "اسم المستخدم 3 أحرف على الأقل"})
+    if not is_safe_username_component(username):
+        return jsonify({"success": False, "message": "اسم المستخدم لا يمكن أن يحتوي فواصل مسارات أو أحرف تحكم"}), 400
     if len(password) < 4:
         return jsonify({"success": False, "message": "كلمة المرور 4 أحرف على الأقل"})
     if username in db["users"]:
@@ -1209,6 +1535,7 @@ def api_register():
         "is_admin": False,
         "created_at": str(datetime.now()),
         "max_servers": db["plans"]["free"]["max_servers"],
+        "max_files": 10,
         "expiry_days": 365,
         "last_login": None,
         "telegram_id": telegram_id if telegram_id else None,
@@ -1219,7 +1546,7 @@ def api_register():
     }
     save_db(db)
 
-    user_dir = os.path.join(USERS_DIR, username)
+    user_dir = get_user_directory(username)
     os.makedirs(user_dir, exist_ok=True)
     os.makedirs(os.path.join(user_dir, "SERVERS"), exist_ok=True)
 
@@ -1244,17 +1571,11 @@ def api_register():
 
 @app.route('/api/login', methods=['POST'])
 def api_login():
-    data = request.get_json()
-    username = data.get("username", "").strip()
-    password = data.get("password", "").strip()
-
-    if username == ADMIN_USERNAME and password == ADMIN_PASSWORD_RAW:
-        session.clear()
-        session['username'] = username
-        session.permanent = True
-        db["users"][ADMIN_USERNAME]["last_login"] = str(datetime.now())
-        save_db(db)
-        return jsonify({"success": True, "redirect": "/dashboard", "is_admin": True})
+    data = request.get_json(silent=True) or {}
+    if not isinstance(data, dict):
+        return jsonify({"success": False, "message": "بيانات الطلب غير صالحة"}), 400
+    username = str(data.get("username", "")).strip()
+    password = str(data.get("password", "")).strip()
 
     user = db["users"].get(username)
     if not user:
@@ -1535,6 +1856,7 @@ def admin_users():
             "created_at": udata.get("created_at"),
             "last_login": udata.get("last_login"),
             "max_servers": udata.get("max_servers", 1),
+            "max_files": user_max_files(udata),
             "expiry_days": udata.get("expiry_days", 365),
             "telegram_id": udata.get("telegram_id"),
             "api_key": udata.get("api_key"),
@@ -1547,13 +1869,21 @@ def admin_users():
 def admin_create_user():
     if not _check_admin_access():
         return jsonify({"success": False}), 403
-    data = request.get_json()
-    username = data.get("username", "").strip()
-    password = data.get("password", "").strip()
-    max_servers = int(data.get("max_servers", 2))
-    expiry_days = int(data.get("expiry_days", 365))
+    data = request.get_json(silent=True) or {}
+    if not isinstance(data, dict):
+        return jsonify({"success": False, "message": "بيانات الطلب غير صالحة"}), 400
+    username = str(data.get("username", "")).strip()
+    password = str(data.get("password", "")).strip()
+    try:
+        max_servers = max(1, min(int(data.get("max_servers", 2)), 1000000))
+        max_files = max(1, min(int(data.get("max_files", 10)), 1000000))
+        expiry_days = max(1, min(int(data.get("expiry_days", 365)), 36500))
+    except (TypeError, ValueError):
+        return jsonify({"success": False, "message": "قيم الحدود والمدة يجب أن تكون أرقامًا صحيحة"}), 400
     if not username or not password:
-        return jsonify({"success": False, "message": "جميع الحقول مطلوبة"})
+        return jsonify({"success": False, "message": "جميع الحقول مطلوبة"}), 400
+    if not is_safe_username_component(username) or len(username) < 3:
+        return jsonify({"success": False, "message": "اسم المستخدم غير صالح"}), 400
     if username in db["users"]:
         return jsonify({"success": False, "message": "المستخدم موجود"})
     db["users"][username] = {
@@ -1561,6 +1891,7 @@ def admin_create_user():
         "is_admin": False,
         "created_at": str(datetime.now()),
         "max_servers": max_servers,
+        "max_files": max_files,
         "expiry_days": expiry_days,
         "last_login": None,
         "telegram_id": None,
@@ -1570,7 +1901,7 @@ def admin_create_user():
         "status": "approved"
     }
     save_db(db)
-    user_dir = os.path.join(USERS_DIR, username)
+    user_dir = get_user_directory(username)
     os.makedirs(user_dir, exist_ok=True)
     os.makedirs(os.path.join(user_dir, "SERVERS"), exist_ok=True)
     return jsonify({"success": True, "message": "✅ تم إنشاء الحساب"})
@@ -1579,17 +1910,25 @@ def admin_create_user():
 def admin_delete_user():
     if not _check_admin_access():
         return jsonify({"success": False}), 403
-    data = request.get_json()
-    username = data.get("username", "").strip()
-    if not username or username == ADMIN_USERNAME:
-        return jsonify({"success": False, "message": "لا يمكن حذف هذا المستخدم"})
+    data = request.get_json(silent=True) or {}
+    if not isinstance(data, dict):
+        return jsonify({"success": False, "message": "بيانات الطلب غير صالحة"}), 400
+    username = str(data.get("username", "")).strip()
+    if not username or username == ADMIN_USERNAME or (username in db.get("users", {}) and db["users"][username].get("is_admin")):
+        return jsonify({"success": False, "message": "لا يمكن حذف حساب الإدارة"}), 400
     if username in db["users"]:
-        for fid in [fid for fid, srv in db["servers"].items() if srv["owner"] == username]:
+        if not is_safe_username_component(username):
+            return jsonify({"success": False, "message": "اسم المستخدم القديم غير آمن لمسار الحذف؛ لم تُحذف أي ملفات"}), 400
+        safe_servers_root = os.path.realpath(get_user_servers_dir(username))
+        for fid in [fid for fid, srv in db["servers"].items() if srv.get("owner") == username]:
             stop_server_process(fid)
-            if os.path.exists(db["servers"][fid]["path"]):
-                shutil.rmtree(db["servers"][fid]["path"], ignore_errors=True)
+            server_path = os.path.realpath(db["servers"][fid].get("path", ""))
+            if os.path.commonpath([safe_servers_root, server_path]) == safe_servers_root and os.path.isdir(server_path):
+                shutil.rmtree(server_path, ignore_errors=True)
+            else:
+                print(f"⚠️ تم منع حذف مسار خارج مجلد المستخدم: {server_path}", flush=True)
             del db["servers"][fid]
-        user_dir = os.path.join(USERS_DIR, username)
+        user_dir = get_user_directory(username)
         if os.path.exists(user_dir):
             shutil.rmtree(user_dir, ignore_errors=True)
         del db["users"][username]
@@ -1601,20 +1940,38 @@ def admin_delete_user():
 def admin_update_user():
     if not _check_admin_access():
         return jsonify({"success": False}), 403
-    data = request.get_json()
-    username = data.get("username", "").strip()
+    data = request.get_json(silent=True) or {}
+    if not isinstance(data, dict):
+        return jsonify({"success": False, "message": "بيانات الطلب غير صالحة"}), 400
+    username = str(data.get("username", "")).strip()
     if username not in db["users"]:
-        return jsonify({"success": False, "message": "المستخدم غير موجود"})
-    u = db["users"][username]
-    if "max_servers" in data:
-        u["max_servers"] = int(data["max_servers"])
-    if "expiry_days" in data:
-        u["expiry_days"] = int(data["expiry_days"])
+        return jsonify({"success": False, "message": "المستخدم غير موجود"}), 404
+
+    # Validate every numeric value before mutating the user, avoiding half-applied updates.
+    updates = {}
+    numeric_limits = {
+        "max_servers": (1, 1000000, "حد السيرفرات"),
+        "max_files": (1, 1000000, "حد الملفات"),
+        "expiry_days": (1, 36500, "مدة الحساب"),
+        "storage_limit": (0, 10**15, "سعة التخزين"),
+    }
+    for field, (minimum, maximum, label) in numeric_limits.items():
+        if field not in data:
+            continue
+        try:
+            value = int(data[field])
+        except (TypeError, ValueError):
+            return jsonify({"success": False, "message": f"{label} يجب أن يكون رقمًا صحيحًا"}), 400
+        if value < minimum or value > maximum:
+            return jsonify({"success": False, "message": f"{label} يجب أن يكون بين {minimum} و{maximum}"}), 400
+        updates[field] = value
     if "is_admin" in data:
-        u["is_admin"] = bool(data["is_admin"])
-    if "storage_limit" in data:
-        u["storage_limit"] = int(data["storage_limit"])
-    save_db(db)
+        if not isinstance(data["is_admin"], bool):
+            return jsonify({"success": False, "message": "قيمة صلاحية الإدارة غير صالحة"}), 400
+        updates["is_admin"] = data["is_admin"]
+    db["users"][username].update(updates)
+    if not save_db(db):
+        return jsonify({"success": False, "message": "تعذر حفظ التغييرات في قاعدة البيانات"}), 500
     return jsonify({"success": True, "message": f"✅ تم تحديث {username}"})
 
 # ============== API النظام ==============
@@ -1883,9 +2240,13 @@ def server_action(folder, action):
         restart_server(folder)
         return jsonify({"success": True, "message": "🔄 تم إعادة التشغيل"})
     elif action == "delete":
+        expected_path = _safe_server_dir(srv.get("owner", ""), folder)
+        recorded_path = os.path.abspath(srv.get("path", ""))
+        if not expected_path or recorded_path != expected_path or os.path.realpath(recorded_path) != expected_path:
+            return jsonify({"success": False, "message": "تم منع الحذف لأن مسار السيرفر لا يطابق مجلد المستخدم"}), 400
         stop_server_process(folder)
-        if os.path.exists(srv["path"]):
-            shutil.rmtree(srv["path"], ignore_errors=True)
+        if os.path.isdir(expected_path):
+            shutil.rmtree(expected_path, ignore_errors=True)
         del db["servers"][folder]
         save_db(db)
         return jsonify({"success": True, "message": "🗑 تم الحذف"})
@@ -1948,15 +2309,15 @@ def list_server_files(folder):
     base = os.path.abspath(srv["path"])
     files = []
     try:
-        for root, dirs, names in os.walk(base):
-            dirs[:] = [d for d in dirs if d not in ['__pycache__', '.git', '.venv', 'venv']]
+        for root, dirs, names in os.walk(base, followlinks=False):
+            dirs[:] = [d for d in dirs if d not in FILE_COUNT_EXCLUDED_DIRS and not os.path.islink(os.path.join(root, d))]
             rel_root = os.path.relpath(root, base)
             rel_root = '' if rel_root == '.' else rel_root.replace(os.sep, '/')
             for name in dirs + names:
-                if name in ['out.log', 'server.log', 'meta.json', 'errors.log']:
+                rel = os.path.join(rel_root, name).replace(os.sep, '/') if rel_root else name
+                if is_reserved_project_path(rel) or is_reserved_temp_name(name):
                     continue
                 full = os.path.join(root, name)
-                rel = os.path.join(rel_root, name).replace(os.sep, '/') if rel_root else name
                 try:
                     stat = os.stat(full)
                     size_bytes = stat.st_size if os.path.isfile(full) else 0
@@ -2001,11 +2362,23 @@ def get_file_content(folder, filename):
     fpath = safe_relative_path(srv["path"], filename)
     if not fpath or not os.path.isfile(fpath):
         return jsonify({"content": "", "message": "الملف غير موجود"}), 404
+    relative_name = os.path.relpath(fpath, os.path.realpath(srv["path"])).replace(os.sep, "/")
+    if is_reserved_project_path(relative_name) or has_symlink_component(srv["path"], filename):
+        return jsonify({"content": "", "message": "لا يمكن فتح ملفات النظام أو المسارات الرمزية من المحرر"}), 403
+    if os.path.getsize(fpath) > 5 * 1024 * 1024:
+        return jsonify({"content": "", "message": "الملف أكبر من حد المحرر (5 ميغابايت). نزّله وعدّله بأداة ملفات ثم أعد رفعه."}), 413
     try:
-        with open(fpath, 'r', encoding='utf-8', errors='replace') as f:
-            return jsonify({"content": f.read()})
+        with open(fpath, 'rb') as f:
+            raw = f.read()
+        if b"\x00" in raw[:8192]:
+            return jsonify({"content": "[ملف ثنائي]", "is_binary": True})
+        try:
+            content = raw.decode("utf-8")
+        except UnicodeDecodeError:
+            return jsonify({"content": "[ملف ثنائي]", "is_binary": True})
+        return jsonify({"content": content, "is_binary": False})
     except Exception:
-        return jsonify({"content": "[ملف ثنائي]"})
+        return jsonify({"content": "", "message": "تعذر قراءة الملف"}), 500
 
 @app.route('/api/files/save/<folder>/<path:filename>', methods=['POST'])
 def save_file_content(folder, filename):
@@ -2017,12 +2390,33 @@ def save_file_content(folder, filename):
     fpath = safe_relative_path(srv["path"], filename)
     if not fpath or not os.path.isfile(fpath):
         return jsonify({"success": False, "message": "الملف غير موجود"}), 404
+    relative_name = os.path.relpath(fpath, os.path.realpath(srv["path"])).replace(os.sep, "/")
+    if is_reserved_project_path(relative_name) or has_symlink_component(srv["path"], filename):
+        return jsonify({"success": False, "message": "لا يمكن تعديل ملفات النظام أو المسارات الرمزية"}), 403
     data = request.get_json(silent=True) or {}
+    if not isinstance(data, dict):
+        return jsonify({"success": False, "message": "بيانات الطلب غير صالحة"}), 400
+    content = data.get("content", "")
+    if not isinstance(content, str):
+        return jsonify({"success": False, "message": "محتوى الملف غير صالح"}), 400
+    if len(content.encode("utf-8")) > 5 * 1024 * 1024:
+        return jsonify({"success": False, "message": "المحتوى أكبر من حد المحرر (5 ميغابايت)"}), 413
+    temp_path = None
     try:
-        with open(fpath, 'w', encoding='utf-8') as f:
-            f.write(data.get("content", ""))
+        parent = os.path.dirname(fpath)
+        temp_path = os.path.join(parent, f".mazagi-save-{secrets.token_hex(8)}.tmp")
+        with open(temp_path, 'w', encoding='utf-8', newline='') as f:
+            f.write(content)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(temp_path, fpath)
         return jsonify({"success": True, "message": "✅ تم الحفظ"})
     except Exception as e:
+        if temp_path:
+            try:
+                if os.path.exists(temp_path): os.remove(temp_path)
+            except OSError:
+                pass
         return jsonify({"success": False, "message": str(e)}), 500
 
 @app.route('/api/files/upload/<folder>', methods=['POST'])
@@ -2040,13 +2434,34 @@ def upload_files(folder):
     uploaded = 0
     errors_list = []
 
-    for f in files:
+    # Check the full batch before writing anything, so the limit cannot be exceeded by multi-file uploads.
+    candidate_names = []
+    seen_names = set()
+    for item in files:
+        if not item or not item.filename:
+            continue
+        clean_name = safe_user_filename(item.filename)
+        if not clean_name:
+            errors_list.append(f"اسم ملف غير صالح: {item.filename}")
+            continue
+        if is_reserved_project_path(clean_name):
+            return jsonify({"success": False, "message": f"الاسم {clean_name} محجوز لسجلات النظام، اختر اسمًا آخر."}), 400
+        name_key = clean_name.casefold()
+        if name_key in seen_names:
+            return jsonify({"success": False, "message": f"الملف {clean_name} مكرر في نفس عملية الرفع."}), 400
+        seen_names.add(name_key)
+        candidate_names.append((item, clean_name))
+    if not candidate_names:
+        return jsonify({"success": False, "message": "لم يتم اختيار ملفات صالحة للرفع", "warnings": errors_list}), 400
+    new_unique_names = {name for _, name in candidate_names if not os.path.exists(os.path.join(srv["path"], name))}
+    user_name = session["username"]
+    current_count = count_user_files(user_name)
+    limit = user_max_files(db["users"].get(user_name, {}))
+    if current_count + len(new_unique_names) > limit:
+        return jsonify({"success": False, "message": f"رفع مرفوض: حدك {limit} ملفًا والمستخدم حاليًا {current_count}. المتاح {max(0, limit-current_count)} ملف."}), 400
+
+    for f, filename in candidate_names:
         try:
-            if not f or not f.filename:
-                continue
-            filename = safe_user_filename(f.filename)
-            if not filename:
-                continue
             save_path = os.path.join(srv["path"], filename)
             f.save(save_path)
             uploaded += 1
@@ -2087,19 +2502,40 @@ def _auto_install_after_upload(srv_path: str, server_type: str, log_path: str):
 
 
 def safe_extract_zip(zip_file, destination):
-    """يفك ZIP فقط داخل مجلد المشروع ويرفض المسارات الخارجة أو روابط الملفات الرمزية."""
-    base = os.path.abspath(destination)
+    """Extract ZIP safely: reject path traversal, symlinks, duplicate targets, and app-owned names."""
+    base = os.path.realpath(os.path.abspath(destination))
     os.makedirs(base, exist_ok=True)
+    seen_targets = set()
     for info in zip_file.infolist():
-        raw_name = info.filename.replace("\\", "/")
-        if not raw_name or raw_name.startswith("/") or re.match(r"^[A-Za-z]:", raw_name):
+        raw_name = str(info.filename or "").replace("\\", "/")
+        if (not raw_name or raw_name.startswith("/") or re.match(r"^[A-Za-z]:", raw_name)
+                or "\x00" in raw_name):
             raise ValueError("أرشيف ZIP يحتوي مساراً غير آمن")
-        target = os.path.abspath(os.path.join(base, raw_name))
-        if os.path.commonpath([base, target]) != base:
+        parts = [part for part in raw_name.split("/") if part not in ("", ".")]
+        if not parts or any(part == ".." for part in parts):
             raise ValueError("أرشيف ZIP يحاول الكتابة خارج مجلد المشروع")
+        relative_name = "/".join(parts)
+        if is_reserved_project_path(relative_name):
+            raise ValueError(f"أرشيف ZIP يحتوي اسمًا محجوزًا للنظام: {relative_name}")
+        target = os.path.abspath(os.path.join(base, *parts))
+        try:
+            if os.path.commonpath([base, target]) != base:
+                raise ValueError("أرشيف ZIP يحاول الكتابة خارج مجلد المشروع")
+        except ValueError:
+            raise ValueError("أرشيف ZIP يحاول الكتابة خارج مجلد المشروع")
+        target_key = os.path.normcase(target).casefold()
+        if target_key in seen_targets:
+            raise ValueError(f"أرشيف ZIP يحتوي مسارًا مكررًا: {relative_name}")
+        seen_targets.add(target_key)
         unix_mode = (info.external_attr >> 16) & 0xFFFF
         if (unix_mode & 0o170000) == 0o120000:
             raise ValueError("روابط الملفات الرمزية غير مسموحة داخل ZIP")
+        # Also reject extraction through an existing symlinked parent directory.
+        parent = base
+        for part in parts[:-1]:
+            parent = os.path.join(parent, part)
+            if os.path.islink(parent):
+                raise ValueError("أرشيف ZIP يحاول الكتابة عبر مجلد رمزي غير آمن")
     zip_file.extractall(base)
 
 def normalize_extracted_project(path):
@@ -2133,13 +2569,21 @@ def auto_create_server_from_upload():
     if user_srv_count >= user.get("max_servers", 2):
         return jsonify({"success": False, "message": f"وصلت للحد الأقصى ({user.get('max_servers', 2)}) سيرفر."})
 
+    server_name = (request.form.get("server_name") or "").strip()
+    if not server_name:
+        return jsonify({"success": False, "message": "اكتب اسمًا للسيرفر قبل رفع الملف"}), 400
+    if len(server_name) > 60:
+        return jsonify({"success": False, "message": "اسم السيرفر يجب ألا يتجاوز 60 حرفًا"}), 400
+
     f = request.files.get('file')
     if not f or not f.filename:
         return jsonify({"success": False, "message": "اختر ملفاً أولاً"})
 
     filename = safe_user_filename(f.filename)
     if not filename:
-        return jsonify({"success": False, "message": "اسم الملف غير صالح"})
+        return jsonify({"success": False, "message": "اسم الملف غير صالح"}), 400
+    if is_reserved_project_path(filename):
+        return jsonify({"success": False, "message": "هذا الاسم محجوز لسجلات النظام؛ اختر اسمًا آخر للملف."}), 400
 
     ext = os.path.splitext(filename)[1].lower()
     if ext == '.py': server_type='Python'
@@ -2153,10 +2597,15 @@ def auto_create_server_from_upload():
     elif ext == '.zip': server_type='Python'
     else: return jsonify({"success":False,"message":"ارفع مشروع ويب أو ZIP أو Python/Node/PHP/Ruby/Java/Go/Rust/HTML"})
 
+    current_file_count = count_user_files(session["username"])
+    max_file_count = user_max_files(user)
+    if current_file_count >= max_file_count:
+        return jsonify({"success": False, "message": f"وصلت للحد الأقصى للملفات ({current_file_count}/{max_file_count}). اطلب من الإدارة زيادة الحد."}), 400
+
     base_name = os.path.splitext(filename)[0]
     safe_name = re.sub(r'[^a-zA-Z0-9_-]+', '', base_name) or "my-server"
-    server_name = base_name[:40] or "سيرفري الجديد"
-    folder = f"{session['username']}_{safe_name}_{int(time.time())}"
+    safe_server_slug = re.sub(r'[^a-zA-Z0-9_-]+', '', server_name)[:35] or "server"
+    folder = f"{session['username']}_{safe_server_slug}_{int(time.time())}_{secrets.token_hex(3)}"
     path = os.path.join(get_user_servers_dir(session["username"]), folder)
     os.makedirs(path, exist_ok=True)
 
@@ -2172,8 +2621,15 @@ def auto_create_server_from_upload():
             with zipfile.ZipFile(zip_path, 'r') as zf:
                 if zf.testzip():
                     raise ValueError("ملف ZIP تالف")
+                archive_files = count_zip_files(zf)
+                if current_file_count + archive_files > max_file_count:
+                    raise ValueError(f"المشروع يحتوي {archive_files} ملفًا، والمتبقي في الحد {max(0, max_file_count-current_file_count)}. زِد الحد من الإدارة أو اختر مشروعًا أصغر.")
                 safe_extract_zip(zf, path)
             normalize_extracted_project(path)
+            try:
+                os.remove(zip_path)  # the archive is only an import container; retain extracted project files
+            except OSError:
+                pass
             # تحديد نوع المشروع وملف التشغيل من المحتوى بعد فك الضغط.
             server_type = detect_project_type(path)
             startup_file = detect_main_file(path, server_type)
@@ -2198,15 +2654,26 @@ def auto_create_server_from_upload():
         log_path = os.path.join(path, "out.log")
         def install_and_start():
             try:
-                with open(log_path, "a", encoding="utf-8") as lf:
-                    auto_install_deps(path, server_type, lf)
+                # Python's start_server_process calls ensure_python_environment itself;
+                # avoid installing the same requirements twice during first startup.
+                if server_type != "Python":
+                    with open(log_path, "a", encoding="utf-8") as lf:
+                        auto_install_deps(path, server_type, lf)
                 ok, start_msg = start_server_process(folder)
                 with open(log_path, "a", encoding="utf-8") as lf:
-                    lf.write(f"\n🚀 التشغيل التلقائي: {start_msg}\n")
+                    lf.write(f"\n{'✅' if ok else '❌'} نتيجة التشغيل التلقائي: {start_msg}\n")
+                if not ok:
+                    db["servers"][folder]["status"] = "Stopped"
+                    db["servers"][folder]["last_error"] = str(start_msg)
+                    save_db(db)
             except Exception as exc:
                 try:
                     with open(log_path, "a", encoding="utf-8") as lf:
-                        lf.write(f"\n❌ التشغيل التلقائي: {exc}\n")
+                        lf.write(f"\n❌ التثبيت/التشغيل التلقائي: {exc}\n")
+                    db["servers"][folder]["status"] = "Stopped"
+                    db["servers"][folder]["pid"] = None
+                    db["servers"][folder]["last_error"] = str(exc)
+                    save_db(db)
                 except Exception:
                     pass
         threading.Thread(target=install_and_start, daemon=True).start()
@@ -2228,6 +2695,9 @@ def replace_file(folder, filename):
     target = safe_relative_path(srv["path"], filename)
     if not target:
         return jsonify({"success": False, "message": "اسم ملف غير صالح"}), 400
+    relative_name = os.path.relpath(target, os.path.realpath(srv["path"])).replace(os.sep, "/")
+    if is_reserved_project_path(relative_name) or has_symlink_component(srv["path"], filename):
+        return jsonify({"success": False, "message": "لا يمكن استبدال ملف نظام أو مسار رمزي"}), 400
     if os.path.isdir(target):
         return jsonify({"success": False, "message": "لا يمكن استبدال مجلد"}), 400
     if not os.path.exists(target):
@@ -2236,8 +2706,8 @@ def replace_file(folder, filename):
     if not new_file or not new_file.filename:
         return jsonify({"success": False, "message": "اختر الملف الجديد أولاً"}), 400
     try:
-        # نكتب إلى ملف مؤقت ثم نستبدل الملف ذرياً، حتى لا يبقى الملف ناقصاً إذا انقطع الرفع.
-        temp_path = target + '.replace_tmp'
+        # نكتب إلى ملف مؤقت عشوائي في نفس المجلد ثم نستبدل الملف ذرياً.
+        temp_path = os.path.join(os.path.dirname(target), f".mazagi-replace-{secrets.token_hex(8)}.tmp")
         new_file.save(temp_path)
         os.replace(temp_path, target)
 
@@ -2282,6 +2752,11 @@ def rename_file(folder):
     new_path = safe_relative_path(os.path.dirname(old_path) if old_path else srv["path"], new_name) if old_path else None
     if not old_path or not new_path:
         return jsonify({"success": False, "message": "اسم غير صالح"})
+    base_real = os.path.realpath(srv["path"])
+    old_rel = os.path.relpath(old_path, base_real).replace(os.sep, "/")
+    new_rel = os.path.relpath(new_path, base_real).replace(os.sep, "/")
+    if is_reserved_project_path(old_rel) or is_reserved_project_path(new_rel) or has_symlink_component(srv["path"], old_name):
+        return jsonify({"success": False, "message": "لا يمكن إعادة تسمية ملف نظام أو مسار رمزي"}), 400
     if not os.path.exists(old_path):
         return jsonify({"success": False, "message": "الملف غير موجود"})
     if os.path.exists(new_path):
@@ -2314,6 +2789,13 @@ def unzip_file(folder, filename):
             bad = zf.testzip()
             if bad:
                 return jsonify({"success": False, "message": f"ملف ZIP تالف: {bad}"})
+            archive_count = count_zip_files(zf)
+            current_count = count_user_files(session["username"])
+            # The ZIP itself is already counted; after extraction it remains, so only count entries not already present.
+            projected_count = current_count + archive_count
+            max_allowed = user_max_files(db["users"].get(session["username"], {}))
+            if projected_count > max_allowed:
+                return jsonify({"success": False, "message": f"فك الضغط سيتجاوز حدك ({current_count}/{max_allowed} ملفًا). زِد الحد من الإدارة أولًا."}), 400
             base = os.path.abspath(srv["path"])
             for member in zf.infolist():
                 member_name = member.filename.replace('\\', '/')
@@ -2347,6 +2829,9 @@ def delete_files(folder):
             continue
         fpath = safe_relative_path(srv["path"], name)
         if not fpath:
+            continue
+        relative_name = os.path.relpath(fpath, os.path.realpath(srv["path"])).replace(os.sep, "/")
+        if is_reserved_project_path(relative_name) or has_symlink_component(srv["path"], name):
             continue
         try:
             if os.path.isdir(fpath):
@@ -2388,8 +2873,11 @@ def create_folder_api(folder):
     if 'username' not in session: return jsonify({'success':False,'message':'غير مصرح'}),401
     srv=db['servers'].get(folder)
     if not srv or srv.get('owner')!=session['username']: return jsonify({'success':False,'message':'غير مصرح'}),403
-    data=request.get_json() or {}; name=safe_relative_path(srv['path'],data.get('filename','').strip())
-    if not name: return jsonify({'success':False,'message':'اسم المجلد غير صالح'}),400
+    data=request.get_json(silent=True) or {}
+    if not isinstance(data, dict): return jsonify({'success':False,'message':'بيانات الطلب غير صالحة'}),400
+    raw_name=str(data.get('filename','')).strip()
+    name=safe_relative_path(srv['path'],raw_name)
+    if not name or is_reserved_project_path(os.path.relpath(name, os.path.realpath(srv['path'])).replace(os.sep,'/')): return jsonify({'success':False,'message':'اسم المجلد غير صالح أو محجوز'}),400
     if os.path.exists(name): return jsonify({'success':False,'message':'المجلد موجود مسبقاً'}),409
     try: os.makedirs(name); return jsonify({'success':True,'message':'📁 تم إنشاء المجلد'})
     except Exception as e: return jsonify({'success':False,'message':str(e)}),500
@@ -2401,12 +2889,24 @@ def create_file_api(folder):
     srv = db["servers"].get(folder)
     if not srv or srv["owner"] != session["username"]:
         return jsonify({"success": False})
-    data = request.get_json()
-    filename = safe_user_filename(data.get("filename", "").strip())
+    data = request.get_json(silent=True) or {}
+    if not isinstance(data, dict):
+        return jsonify({"success": False, "message": "بيانات الطلب غير صالحة"}), 400
+    filename = safe_user_filename(str(data.get("filename", "")).strip())
     if not filename:
-        return jsonify({"success": False, "message": "اسم غير صالح"})
-    fpath = os.path.join(srv["path"], filename)
+        return jsonify({"success": False, "message": "اسم غير صالح"}), 400
+    if is_reserved_project_path(filename):
+        return jsonify({"success": False, "message": "هذا الاسم محجوز لسجلات النظام"}), 400
+    fpath = safe_relative_path(srv["path"], filename)
+    if not fpath:
+        return jsonify({"success": False, "message": "اسم غير صالح"}), 400
+    if os.path.exists(fpath):
+        return jsonify({"success": False, "message": "يوجد ملف بهذا الاسم؛ افتحه للتعديل بدل إنشاء ملف جديد"}), 409
+    quota_error = file_quota_message(session["username"], 1)
+    if quota_error:
+        return jsonify({"success": False, "message": quota_error}), 400
     try:
+        os.makedirs(os.path.dirname(fpath), exist_ok=True)
         with open(fpath, 'w', encoding='utf-8') as f:
             f.write(data.get("content", ""))
         # كشف تلقائي بعد الإنشاء + حفظ
@@ -2436,6 +2936,87 @@ def set_startup_file(folder):
     save_db(db)
     return jsonify({"success": True, "message": f"✅ تم تعيين {filename} كملف التشغيل"})
 
+@app.route('/api/admin/user-servers/<username>')
+def admin_user_servers(username):
+    if not _check_admin_access():
+        return jsonify({"success": False, "message": "غير مصرح"}), 403
+    if username not in db.get("users", {}):
+        return jsonify({"success": False, "message": "المستخدم غير موجود"}), 404
+    result = []
+    for folder, srv in db.get("servers", {}).items():
+        if srv.get("owner") != username:
+            continue
+        file_count = 0
+        disk_bytes = 0
+        base = srv.get("path", "")
+        if os.path.isdir(base):
+            for root, dirs, names in os.walk(base, followlinks=False):
+                dirs[:] = [d for d in dirs if d not in FILE_COUNT_EXCLUDED_DIRS and not os.path.islink(os.path.join(root, d))]
+                at_root = os.path.relpath(root, base) == "."
+                for name in names:
+                    full_path = os.path.join(root, name)
+                    if is_reserved_temp_name(name) or (at_root and is_reserved_root_file(name)) or os.path.islink(full_path):
+                        continue
+                    file_count += 1
+                    try:
+                        disk_bytes += os.path.getsize(full_path)
+                    except OSError:
+                        pass
+        result.append({
+            "folder": folder,
+            "title": srv.get("name", folder),
+            "type": srv.get("type", "Python"),
+            "status": srv.get("status", "Stopped"),
+            "created_at": srv.get("created_at", ""),
+            "file_count": file_count,
+            "disk_used_mb": round(disk_bytes / (1024 * 1024), 2),
+            "open_kind": "telegram" if find_telegram_bot_token(base) else ("website" if srv.get("type") == "Static" else "project")
+        })
+    return jsonify({"success": True, "username": username, "servers": sorted(result, key=lambda x: x["created_at"], reverse=True)})
+
+
+@app.route('/api/admin/server/open/<folder>')
+def admin_server_open(folder):
+    if not _check_admin_access():
+        return jsonify({"success": False, "message": "غير مصرح"}), 403
+    srv = db.get("servers", {}).get(folder)
+    if not srv:
+        return jsonify({"success": False, "message": "السيرفر غير موجود"}), 404
+    return jsonify({"success": True, **get_server_open_url(folder, srv)})
+
+
+@app.route('/api/admin/server-action/<folder>/<action>', methods=['POST'])
+def admin_server_action(folder, action):
+    if not _check_admin_access():
+        return jsonify({"success": False, "message": "غير مصرح"}), 403
+    srv = db.get("servers", {}).get(folder)
+    if not srv:
+        return jsonify({"success": False, "message": "السيرفر غير موجود"}), 404
+    if action == "start":
+        ok, message = start_server_process(folder)
+        return jsonify({"success": ok, "message": message}), (200 if ok else 400)
+    if action == "stop":
+        stop_server_process(folder)
+        return jsonify({"success": True, "message": "تم إيقاف السيرفر"})
+    if action == "restart":
+        ok, message = restart_server(folder)
+        if ok is None:
+            ok = db.get("servers", {}).get(folder, {}).get("status") in ("Running", "Starting")
+        return jsonify({"success": bool(ok), "message": message or "تم إرسال أمر إعادة التشغيل"}), (200 if ok else 400)
+    if action == "delete":
+        expected_path = _safe_server_dir(srv.get("owner", ""), folder)
+        server_path = os.path.abspath(srv.get("path", ""))
+        if not expected_path or server_path != expected_path or os.path.realpath(server_path) != expected_path:
+            return jsonify({"success": False, "message": "تم منع الحذف لأن مسار السيرفر لا يطابق مجلد المستخدم"}), 400
+        stop_server_process(folder)
+        if os.path.isdir(expected_path):
+            shutil.rmtree(expected_path, ignore_errors=True)
+        db.get("servers", {}).pop(folder, None)
+        save_db(db)
+        return jsonify({"success": True, "message": "تم حذف السيرفر وملفاته"})
+    return jsonify({"success": False, "message": "إجراء غير معروف"}), 400
+
+
 @app.route('/api/admin/server-files/<folder>')
 def admin_server_files(folder):
     if not _check_admin_access():
@@ -2447,13 +3028,13 @@ def admin_server_files(folder):
     base = srv.get("path", "")
     if not os.path.isdir(base):
         return jsonify({"success": True, "files": []})
-    for root_dir, dirs, names in os.walk(base):
-        dirs[:] = [d for d in dirs if d not in {'.venv', '__pycache__'}]
+    for root_dir, dirs, names in os.walk(base, followlinks=False):
+        dirs[:] = [d for d in dirs if d not in FILE_COUNT_EXCLUDED_DIRS and not os.path.islink(os.path.join(root_dir, d))]
         for name in names:
-            if name in {'out.log','errors.log','server.log','meta.json'}:
-                continue
             full = os.path.join(root_dir, name)
             rel = os.path.relpath(full, base).replace(os.sep, '/')
+            if is_reserved_project_path(rel) or is_reserved_temp_name(name) or os.path.islink(full):
+                continue
             try:
                 size = os.path.getsize(full)
             except Exception:
@@ -2471,8 +3052,8 @@ def admin_download_file(folder, filename):
     rel = os.path.normpath(filename).replace('\\', '/')
     if rel.startswith('../') or rel == '..' or rel.startswith('/'):
         return jsonify({"success": False, "message": "مسار غير صالح"}), 400
-    fpath = os.path.abspath(os.path.join(srv["path"], rel))
-    base = os.path.abspath(srv["path"])
+    fpath = os.path.realpath(os.path.join(srv["path"], rel))
+    base = os.path.realpath(srv["path"])
     if not (fpath == base or fpath.startswith(base + os.sep)) or not os.path.isfile(fpath):
         return jsonify({"success": False, "message": "الملف غير موجود"}), 404
     return send_file(fpath, as_attachment=True, download_name=os.path.basename(fpath))
@@ -2491,10 +3072,12 @@ def admin_delete_file(folder):
     rel = os.path.normpath(name).replace('\\', '/')
     if rel.startswith('../') or rel == '..' or rel.startswith('/'):
         return jsonify({"success": False, "message": "مسار غير صالح"}), 400
-    fpath = os.path.abspath(os.path.join(srv["path"], rel))
-    base = os.path.abspath(srv["path"])
+    fpath = os.path.realpath(os.path.join(srv["path"], rel))
+    base = os.path.realpath(srv["path"])
     if not fpath.startswith(base + os.sep) or not os.path.exists(fpath):
         return jsonify({"success": False, "message": "الملف غير موجود"}), 404
+    if is_reserved_project_path(rel) or os.path.islink(os.path.join(srv["path"], rel)):
+        return jsonify({"success": False, "message": "لا يمكن حذف ملفات سجلات النظام"}), 400
     try:
         if os.path.isdir(fpath):
             shutil.rmtree(fpath)
@@ -2516,8 +3099,18 @@ def admin_download_server(folder):
     os.makedirs(temp_base, exist_ok=True)
     archive_base = os.path.join(temp_base, f"{safe_user_filename(srv.get('name','server')) or 'server'}")
     try:
-        shutil.make_archive(archive_base, 'zip', srv["path"])
-        return send_file(archive_base + '.zip', as_attachment=True, download_name=(safe_user_filename(srv.get('name','server')) or 'server') + '.zip')
+        archive_path = archive_base + '.zip'
+        with zipfile.ZipFile(archive_path, 'w', compression=zipfile.ZIP_DEFLATED, allowZip64=True) as archive:
+            for root, dirs, names in os.walk(srv["path"], followlinks=False):
+                dirs[:] = [d for d in dirs if d not in FILE_COUNT_EXCLUDED_DIRS and not os.path.islink(os.path.join(root, d))]
+                at_root = os.path.relpath(root, srv["path"]) == "."
+                for name in names:
+                    full_path = os.path.join(root, name)
+                    rel_path = os.path.relpath(full_path, srv["path"]).replace(os.sep, '/')
+                    if is_reserved_project_path(rel_path) or is_reserved_temp_name(name) or os.path.islink(full_path):
+                        continue
+                    archive.write(full_path, arcname=rel_path)
+        return send_file(archive_path, as_attachment=True, download_name=(safe_user_filename(srv.get('name','server')) or 'server') + '.zip')
     except Exception as e:
         shutil.rmtree(temp_base, ignore_errors=True)
         return jsonify({"success": False, "message": str(e)}), 500

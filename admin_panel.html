@@ -196,6 +196,10 @@
                     <input type="number" id="maxServers" placeholder="2" value="2" min="1" max="100">
                 </div>
                 <div class="form-group">
+                    <label>الحد الأقصى لملفات المستخدم (افتراضي 10)</label>
+                    <input type="number" id="newUserMaxFiles" placeholder="10" value="10" min="1" max="1000000">
+                </div>
+                <div class="form-group">
                     <label>عدد الأيام (الصلاحية)</label>
                     <input type="number" id="expiryDays" placeholder="365" value="365" min="1" max="3650">
                 </div>
@@ -204,6 +208,15 @@
         </div>
 
         <div class="card">
+            <div class="card-title"><i class="fas fa-sliders-h"></i> الحد الأقصى لملفات المستخدم</div>
+            <p style="color:#9ca3cf;font-size:.82rem;line-height:1.7;margin-bottom:14px;">اختر المستخدم، ثم اكتب العدد المسموح به. الحد الافتراضي للحساب الجديد هو 10 ملفات، ويمكن تغييره لاحقًا.</p>
+            <div class="form-row">
+                <div class="form-group"><label for="fileLimitUser">المستخدم</label><select id="fileLimitUser" style="width:100%;padding:12px 16px;background:#070b15;border:1px solid rgba(45,122,255,.4);border-radius:14px;color:#fff;"><option value="">تحميل المستخدمين...</option></select></div>
+                <div class="form-group"><label for="fileLimitValue">الحد الأقصى للملفات</label><input type="number" id="fileLimitValue" min="1" max="1000000" value="10" /></div>
+            </div>
+            <button class="btn-primary" onclick="saveSelectedUserFileLimit()"><i class="fas fa-save"></i> حفظ حد الملفات</button>
+        </div>
+        <div class="card">
             <div class="card-title"><i class="fas fa-list"></i> قائمة المستخدمين</div>
             <div class="search-box">
                 <i class="fas fa-search"></i>
@@ -211,7 +224,7 @@
             </div>
             <table class="data-table">
                 <thead>
-                    <tr><th>اسم المستخدم</th><th>النوع</th><th>الخطة</th><th>السيرفرات</th><th>الصلاحية</th><th>تاريخ الإنشاء</th><th>الإجراءات</th></tr>
+                    <tr><th>اسم المستخدم</th><th>النوع</th><th>الخطة</th><th>السيرفرات</th><th>حد الملفات</th><th>الصلاحية</th><th>تاريخ الإنشاء</th><th>الإجراءات</th></tr>
                 </thead>
                 <tbody id="usersList"></tbody>
             </table>
@@ -331,6 +344,14 @@
 
     <!-- Settings Tab -->
     <div id="settingsTab" class="tab-content">
+        <div class="card">
+            <div class="card-title"><i class="fas fa-database"></i> دليل ملفات النظام</div>
+            <div style="display:grid;gap:10px;color:#cbd5e1;line-height:1.8;">
+                <div style="padding:12px;border:1px solid rgba(45,122,255,.18);border-radius:14px;"><strong style="color:#00e5ff;">db.json — قاعدة البيانات الرئيسية</strong><div style="font-size:.8rem;color:#9ca3cf;">تحتوي حسابات المستخدمين وإعدادات الخطط وبيانات السيرفرات. تبقى باسمها الداخلي حتى لا ينقطع الربط مع البيانات القديمة.</div></div>
+                <div style="padding:12px;border:1px solid rgba(45,122,255,.18);border-radius:14px;"><strong style="color:#00e5ff;">USERS — ملفات المستخدمين</strong><div style="font-size:.8rem;color:#9ca3cf;">داخلها مجلد خاص بكل مستخدم، ثم مجلدات السيرفرات والملفات التي رفعها.</div></div>
+                <div style="padding:12px;border:1px solid rgba(45,122,255,.18);border-radius:14px;"><strong style="color:#00e5ff;">قاعدة بيانات مزاجي (التسمية العربية)</strong><div style="font-size:.8rem;color:#9ca3cf;">هذا هو الوصف العربي لملف db.json؛ لا تغيّر اسمه الفيزيائي يدويًا لأن النظام يعتمد عليه عند بدء التشغيل.</div></div>
+            </div>
+        </div>
         <div class="card">
             <div class="card-title"><i class="fas fa-cog"></i> إعدادات النظام</div>
             <div class="form-row">
@@ -569,11 +590,11 @@
                 document.getElementById('totalUsers').innerText = data.users.length;
                 let totalServers = 0, activeServers = 0, totalDisk = 0;
                 for (const user of data.users) {
-                    const userServers = await fetch(`/api/servers?user=${user.username}`).then(r => r.json());
+                    const userServers = await fetch(`/api/admin/user-servers/${encodeURIComponent(user.username)}`).then(r => r.json());
                     if (userServers.servers) {
                         totalServers += userServers.servers.length;
                         activeServers += userServers.servers.filter(s => s.status === 'Running').length;
-                        totalDisk += userServers.stats?.disk_total || 0;
+                        totalDisk += userServers.servers.reduce((sum, server) => sum + (Number(server.disk_used_mb) || 0), 0);
                     }
                 }
                 document.getElementById('totalServers').innerText = totalServers;
@@ -589,16 +610,35 @@
             const res = await fetch('/api/admin/users');
             const data = await res.json();
             const list = document.getElementById('usersList');
+            const limitSelect = document.getElementById('fileLimitUser');
+            if (limitSelect) {
+                const previousUser = limitSelect.value;
+                limitSelect.innerHTML = data.users.map(u => `<option value="${escapeHtml(u.username)}" data-max-files="${Number(u.max_files || 10)}">${escapeHtml(u.username)}${u.is_admin ? ' (مسؤول)' : ''}</option>`).join('');
+                if (data.users.some(u => u.username === previousUser)) limitSelect.value = previousUser;
+                const selected = data.users.find(u => u.username === limitSelect.value);
+                document.getElementById('fileLimitValue').value = selected ? Number(selected.max_files || 10) : 10;
+                limitSelect.onchange = () => {
+                    const chosen = data.users.find(u => u.username === limitSelect.value);
+                    document.getElementById('fileLimitValue').value = chosen ? Number(chosen.max_files || 10) : 10;
+                };
+            }
             list.innerHTML = data.users.map(u => `
                 <tr>
                     <td><strong>${escapeHtml(u.username)}</strong></td>
                     <td><span class="badge ${u.is_admin ? 'badge-admin' : 'badge-user'}">${u.is_admin ? '👑 مسؤول' : '👤 مستخدم'}</span></td>
                     <td>${u.plan || 'free'}</td>
                     <td>${u.max_servers}</td>
+                    <td style="min-width:170px;">
+                        <div style="display:flex;gap:6px;align-items:center;">
+                            <input type="number" min="1" max="1000000" value="${Number(u.max_files || 10)}" aria-label="حد ملفات ${escapeHtml(u.username)}" style="width:86px;padding:7px;background:#070b15;border:1px solid rgba(45,122,255,.4);border-radius:10px;color:#fff;" />
+                            <button class="btn-success" data-user="${escapeHtml(u.username)}" onclick="updateUserMaxFiles(this.dataset.user,this.parentElement.querySelector('input').value)" style="padding:7px 10px;">حفظ</button>
+                        </div>
+                        <button class="btn-secondary" data-user="${escapeHtml(u.username)}" onclick="openAdminUserServers(this.dataset.user)" style="margin-top:6px;padding:6px 10px;"><i class="fas fa-server"></i> سيرفرات وملفات</button>
+                    </td>
                     <td>${u.expiry_days} يوم</td>
                     <td style="font-size:11px;">${(u.created_at || '').substring(0,10)}</td>
                     <td>
-                        ${u.username !== 'dont' ? `<button class="action-btn delete" onclick="deleteUser('${escapeHtml(u.username)}')"><i class="fas fa-trash"></i></button>` : '<span style="color:#9ca3cf;">محمي</span>'}
+                        ${u.username !== 'zzmmkj' ? `<button class="action-btn delete" data-user="${escapeHtml(u.username)}" onclick="deleteUser(this.dataset.user)"><i class="fas fa-trash"></i></button>` : '<span style="color:#9ca3cf;">محمي</span>'}
                     </td>
                 </tr>
             `).join('');
@@ -626,6 +666,69 @@
                 }
             }
         });
+    }
+
+    let adminActiveUserServers = '';
+    async function openAdminUserServers(username) {
+        adminActiveUserServers = username;
+        const modal = document.getElementById('adminUserServersModal');
+        const title = document.getElementById('adminUserServersTitle');
+        const list = document.getElementById('adminUserServersList');
+        title.textContent = `سيرفرات وملفات المستخدم: ${username}`;
+        list.innerHTML = '<div style="padding:20px;text-align:center;color:#9ca3cf;">جاري تحميل السيرفرات والملفات...</div>';
+        modal.classList.add('active');
+        try {
+            const r = await fetch(`/api/admin/user-servers/${encodeURIComponent(username)}`);
+            const d = await r.json();
+            if (!r.ok || !d.success) throw new Error(d.message || 'فشل تحميل السيرفرات');
+            if (!d.servers.length) {
+                list.innerHTML = '<div style="padding:20px;text-align:center;color:#9ca3cf;">هذا المستخدم لا يملك سيرفرات حاليًا.</div>';
+                return;
+            }
+            list.innerHTML = d.servers.map(s => `<div style="padding:14px;border:1px solid rgba(45,122,255,.18);border-radius:16px;margin-bottom:10px;">
+                <div style="display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;align-items:center;">
+                    <div><strong>${escapeHtml(s.title)}</strong><div style="color:#9ca3cf;font-size:.75rem;margin-top:5px;">${escapeHtml(s.type)} · ${s.file_count} ملف · ${s.status === 'Running' ? '🟢 يعمل' : '⚫ متوقف'}</div></div>
+                    <div style="display:flex;gap:7px;flex-wrap:wrap;">
+                        <button class="btn-secondary" data-folder="${escapeHtml(s.folder)}" onclick="adminOpenServer(this.dataset.folder)"><i class="fas fa-external-link-alt"></i> فتح</button>
+                        <button class="btn-success" data-folder="${escapeHtml(s.folder)}" data-action="${s.status === 'Running' ? 'stop' : 'start'}" onclick="adminServerAction(this.dataset.folder,this.dataset.action)"><i class="fas fa-${s.status === 'Running' ? 'stop' : 'play'}"></i> ${s.status === 'Running' ? 'إيقاف' : 'تشغيل'}</button>
+                        <button class="btn-secondary" data-folder="${escapeHtml(s.folder)}" data-owner="${escapeHtml(username)}" onclick="openAdminFiles(this.dataset.folder,this.dataset.owner)"><i class="fas fa-folder-open"></i> الملفات</button>
+                        <button class="btn-secondary" data-folder="${escapeHtml(s.folder)}" onclick="downloadAdminServer(this.dataset.folder)"><i class="fas fa-download"></i> تنزيل الكل</button>
+                    </div>
+                </div>
+            </div>`).join('');
+        } catch (e) {
+            list.innerHTML = `<div style="padding:20px;color:#ff5e7c;">${escapeHtml(e.message || 'خطأ في الاتصال')}</div>`;
+        }
+    }
+    function closeAdminUserServers() { document.getElementById('adminUserServersModal').classList.remove('active'); adminActiveUserServers = ''; }
+
+    async function adminOpenServer(folder) {
+        try {
+            const newTab = window.open('about:blank', '_blank');
+            const r = await fetch(`/api/admin/server/open/${encodeURIComponent(folder)}`);
+            const d = await r.json();
+            if (!r.ok || !d.success || !d.url) {
+                if (newTab) newTab.close();
+                throw new Error(d.message || 'لا يوجد رابط فتح متاح');
+            }
+            if (newTab) { newTab.opener = null; newTab.location = d.url; }
+            else window.location.href = d.url;
+        } catch (e) { showToast(e.message || 'تعذر فتح السيرفر', 'error'); }
+    }
+
+    function downloadAdminServer(folder) {
+        window.location.href = `/api/admin/server/download-all/${encodeURIComponent(folder)}`;
+    }
+
+    async function adminServerAction(folder, action) {
+        try {
+            const r = await fetch(`/api/admin/server-action/${encodeURIComponent(folder)}/${encodeURIComponent(action)}`, {method:'POST'});
+            const d = await r.json();
+            if (!r.ok || !d.success) throw new Error(d.message || 'فشل تنفيذ الإجراء');
+            showToast(d.message || 'تم تنفيذ الإجراء', 'success');
+            if (adminActiveUserServers) await openAdminUserServers(adminActiveUserServers);
+            await loadAllServers();
+        } catch (e) { showToast(e.message || 'خطأ في الاتصال', 'error'); }
     }
 
     async function loadAllServers() {
@@ -665,7 +768,13 @@
                         <td><span class="badge ${typeClass}">${icon} ${typeNames[type] || type}</span></td>
                         <td><span class="badge ${s.status === 'Running' ? 'badge-admin' : ''}" style="${s.status !== 'Running' ? 'background:#555;' : ''}">${s.status === 'Running' ? '🟢 نشط' : '⚫ متوقف'}</span></td>
                         <td style="font-size:11px;">${(s.created_at || '').substring(0,10)}</td>
-                        <td><button class="btn-secondary" onclick="openAdminFiles('${s.folder}', '${escapeHtml(s.owner)}')"><i class="fas fa-folder-open"></i> الملفات</button><button class="action-btn delete" onclick="deleteServer('${s.folder}')"><i class="fas fa-trash"></i></button></td>
+                        <td style="display:flex;gap:5px;flex-wrap:wrap;align-items:center;">
+                          <button class="btn-secondary" data-folder="${escapeHtml(s.folder)}" onclick="adminOpenServer(this.dataset.folder)"><i class="fas fa-external-link-alt"></i> فتح</button>
+                          <button class="btn-success" data-folder="${escapeHtml(s.folder)}" data-action="${s.status === 'Running' ? 'stop' : 'start'}" onclick="adminServerAction(this.dataset.folder,this.dataset.action)" style="padding:7px 10px;">${s.status === 'Running' ? 'إيقاف' : 'تشغيل'}</button>
+                          <button class="btn-secondary" data-folder="${escapeHtml(s.folder)}" data-owner="${escapeHtml(s.owner)}" onclick="openAdminFiles(this.dataset.folder,this.dataset.owner)"><i class="fas fa-folder-open"></i> الملفات</button>
+                          <button class="btn-secondary" data-folder="${escapeHtml(s.folder)}" onclick="downloadAdminServer(this.dataset.folder)"><i class="fas fa-download"></i></button>
+                          <button class="action-btn delete" data-folder="${escapeHtml(s.folder)}" onclick="adminServerAction(this.dataset.folder,'delete')"><i class="fas fa-trash"></i></button>
+                        </td>
                     </tr>
                 `;
             }).join('');
@@ -804,10 +913,36 @@
         } catch(e) { showToast('❌ خطأ', 'error'); }
     }
 
+    async function saveSelectedUserFileLimit() {
+        const username = document.getElementById('fileLimitUser').value;
+        const value = document.getElementById('fileLimitValue').value;
+        if (!username) { showToast('اختر مستخدمًا أولًا', 'error'); return; }
+        await updateUserMaxFiles(username, value);
+    }
+
+    async function updateUserMaxFiles(username, value) {
+        const max_files = Number.parseInt(value, 10);
+        if (!Number.isInteger(max_files) || max_files < 1 || max_files > 1000000) {
+            showToast('أدخل حدًا صحيحًا بين 1 و1,000,000 ملف', 'error');
+            return;
+        }
+        try {
+            const r = await fetch('/api/admin/update-user', {
+                method: 'POST', headers: {'Content-Type':'application/json'},
+                body: JSON.stringify({username, max_files})
+            });
+            const d = await r.json();
+            if (!r.ok || !d.success) throw new Error(d.message || 'تعذر تحديث حد الملفات');
+            showToast(`تم ضبط حد ${username} إلى ${max_files} ملف`, 'success');
+            loadUsers();
+        } catch (e) { showToast(e.message || 'خطأ في الاتصال', 'error'); }
+    }
+
     async function createNewUser() {
         const username = document.getElementById('newUsername').value.trim();
         const password = document.getElementById('newPassword').value.trim();
         const max_servers = parseInt(document.getElementById('maxServers').value) || 2;
+        const max_files = parseInt(document.getElementById('newUserMaxFiles').value) || 10;
         const expiry_days = parseInt(document.getElementById('expiryDays').value) || 365;
         if (!username || !password) {
             showToast('⚠️ الرجاء إدخال جميع البيانات', 'error');
@@ -817,7 +952,7 @@
             const res = await fetch('/api/admin/create-user', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ username, password, max_servers, expiry_days })
+                body: JSON.stringify({ username, password, max_servers, max_files, expiry_days })
             });
             const data = await res.json();
             if (data.success) {
@@ -1146,7 +1281,7 @@
     }
 
     function escapeHtml(s) {
-        return String(s).replace(/[&<>]/g, m => m === '&' ? '&amp;' : m === '<' ? '&lt;' : '&gt;');
+        return String(s).replace(/[&<>\"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',"'":'&#39;'}[m]));
     }
 
     // ===== بدء التشغيل =====
@@ -1174,6 +1309,7 @@
     function downloadAdminAll(){ if(adminFilesFolder) window.location.href=`/api/admin/server/download-all/${encodeURIComponent(adminFilesFolder)}`; }
 </script>
 
+<div id="adminUserServersModal" class="modal"><div class="modal-content" style="max-width:1100px;width:95%;"><div style="display:flex;justify-content:space-between;gap:10px;align-items:center;margin-bottom:15px;"><h3 id="adminUserServersTitle">سيرفرات المستخدم</h3><button class="btn-secondary" onclick="closeAdminUserServers()">رجوع / إغلاق</button></div><div id="adminUserServersList" style="max-height:65vh;overflow:auto;"></div></div></div>
 <div id="adminFilesModal" class="modal"><div class="modal-content" style="max-width:900px"><div style="display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:15px"><h3 id="adminFilesTitle">ملفات السيرفر</h3><button class="btn-secondary" onclick="closeAdminFiles()">رجوع / إغلاق</button></div><div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:15px"><button class="btn-primary" onclick="downloadAdminAll()"><i class="fas fa-file-zipper"></i> سحب كل الملفات ZIP</button></div><div id="adminFilesList" style="max-height:55vh;overflow:auto"></div></div></div>
 </body>
 </html>
