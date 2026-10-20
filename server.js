@@ -2119,7 +2119,7 @@ function firebaseDatabaseDiagnosticInfo(){
   return {host,source:FIREBASE_DATABASE_URL_SOURCE,databaseProjectHint,serviceAccountProjectId,configuredWebProjectId,serviceAccountProjectMatch};
 }
 const FIREBASE_WEB_CONFIG={
-  apiKey:String(process.env.FIREBASE_WEB_API_KEY||'AIzaSyArm4e8lfyoZpcLAGWkKAUJe3HgFMPuBNI').trim(),
+  apiKey:String(process.env.FIREBASE_WEB_API_KEY||'').trim(),
   authDomain:String(process.env.FIREBASE_AUTH_DOMAIN||'sada-iraq-app.firebaseapp.com').trim(),
   projectId:String(process.env.FIREBASE_PROJECT_ID||'sada-iraq-app').trim(),
   storageBucket:String(process.env.FIREBASE_STORAGE_BUCKET||'sada-iraq-app.firebasestorage.app').trim(),
