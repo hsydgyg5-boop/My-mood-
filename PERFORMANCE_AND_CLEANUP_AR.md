@@ -10,6 +10,6 @@
 ## تحقق النشر
 
 1. ارفع محتويات الحزمة إلى مستودع مشروع مزاجي، وليس مشروع صدى العراق.
-2. تأكد أن `requirements.txt` و`Dockerfile` موجودان في جذر المشروع؛ أمر Start هو `python app.py`.
+2. تأكد أن `requirements.txt` و`Dockerfile` موجودان في جذر المشروع، وامسح خانة Custom Start Command في إعدادات Railway واتركها فارغة حتى يستخدم الخدمة أمر `CMD` الموجود داخل Dockerfile.
 3. تأكد من ربط Railway Volume بمسار `/data` للحفاظ على قاعدة البيانات وملفات المستخدمين بين النشرات.
 4. بعد النشر، افتح `/healthz` وتأكد من إرجاع `{"ok": true, "service": "mazagi-host"}`.

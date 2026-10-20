@@ -3,8 +3,7 @@ builder = "DOCKERFILE"
 dockerfilePath = "Dockerfile"
 
 [deploy]
-# Launch Flask directly; app.py reads the PORT value supplied by Railway.
-startCommand = "python app.py"
+# Do not set startCommand here. Let Dockerfile CMD (python app.py) run.
 healthcheckPath = "/healthz"
 healthcheckTimeout = 100
 restartPolicyType = "ON_FAILURE"
